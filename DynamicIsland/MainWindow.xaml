@@ -1,0 +1,203 @@
+<Window x:Class="DynamicIsland.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:ui="clr-namespace:DynamicIsland.UI"
+        mc:Ignorable="d"
+        Title="Dynamic Island"
+        Width="{x:Static ui:IslandLayout.WindowWidth}"
+        Height="{x:Static ui:IslandLayout.WindowHeight}"
+        MinWidth="{x:Static ui:IslandLayout.WindowWidth}"
+        MinHeight="{x:Static ui:IslandLayout.WindowHeight}"
+        MaxWidth="{x:Static ui:IslandLayout.WindowWidth}"
+        MaxHeight="{x:Static ui:IslandLayout.WindowHeight}"
+        d:DesignWidth="{x:Static ui:IslandLayout.WindowWidth}"
+        d:DesignHeight="{x:Static ui:IslandLayout.WindowHeight}"
+        AllowsTransparency="True"
+        Background="Transparent"
+        BorderThickness="0"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        ShowActivated="True"
+        SizeToContent="Manual"
+        Topmost="True"
+        UseLayoutRounding="True"
+        WindowStartupLocation="Manual"
+        WindowStyle="None">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    </Window.Resources>
+
+    <Grid x:Name="RootGrid"
+          Background="Transparent"
+          MouseLeftButtonDown="RootGrid_OnMouseLeftButtonDown">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="62*"/>
+            <ColumnDefinition Width="3*"/>
+        </Grid.ColumnDefinitions>
+        <!-- Main island shell. Adjust collapsed/expanded size in UI/IslandLayout.cs -->
+        <Border x:Name="MainSurface"
+                Width="{x:Static ui:IslandLayout.CollapsedWidth}"
+                Height="{x:Static ui:IslandLayout.CollapsedHeight}"
+                Padding="14,12"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                BorderThickness="1"
+                ClipToBounds="True"
+                MouseEnter="MainSurface_OnMouseEnter"
+                MouseLeave="MainSurface_OnMouseLeave"
+                RenderTransformOrigin="0.5,0">
+            <Border.CornerRadius>
+                <x:Static Member="ui:IslandLayout.CollapsedShellCornerRadius" />
+            </Border.CornerRadius>
+            <Border.Margin>94,0,0,0</Border.Margin>
+            <Border.Background>
+                <SolidColorBrush x:Name="MainSurfaceBackgroundBrush"
+                                 Color="#FF000000" />
+            </Border.Background>
+            <Border.BorderBrush>
+                <SolidColorBrush x:Name="MainSurfaceBorderBrush"
+                                 Color="#FF161616" />
+            </Border.BorderBrush>
+            <Border.RenderTransform>
+                <ScaleTransform x:Name="IslandScaleTransform"
+                                ScaleX="1"
+                                ScaleY="1" />
+            </Border.RenderTransform>
+
+            <Grid>
+                <Grid.RowDefinitions>
+                    <!-- Header row height. Adjust in UI/IslandLayout.cs -->
+                    <RowDefinition Height="{x:Static ui:IslandLayout.StatusRowGridHeight}" />
+                    <!-- Expanded content height is animated in MainWindow.xaml.cs -->
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid x:Name="StatusCard"
+                      Grid.Row="0"
+                      Margin="0"
+                      MouseLeftButtonDown="StatusCard_OnMouseLeftButtonDown">
+                    <Grid Margin="2,0">
+                        <Grid.RenderTransform>
+                            <TranslateTransform x:Name="StatusContentTranslateTransform"
+                                                Y="0" />
+                        </Grid.RenderTransform>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border x:Name="GlyphContainer"
+                                Width="32"
+                                Height="32"
+                                VerticalAlignment="Center"
+                                CornerRadius="16"
+                                Background="#FF0A0A0A"
+                                BorderThickness="1">
+                            <Border.BorderBrush>
+                                <SolidColorBrush x:Name="GlyphBorderBrush"
+                                                 Color="#FF181818" />
+                            </Border.BorderBrush>
+                            <Grid>
+                                <Ellipse x:Name="StatusAccentEllipse"
+                                         Width="24"
+                                         Height="24"
+                                         Opacity="0.14">
+                                    <Ellipse.Fill>
+                                        <SolidColorBrush x:Name="StatusAccentEllipseBrush"
+                                                         Color="#FF6CE1FF" />
+                                    </Ellipse.Fill>
+                                </Ellipse>
+                                <TextBlock Text="{Binding StatusGlyph}"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           FontFamily="Cascadia Code SemiBold"
+                                           FontSize="15"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextPrimaryBrush}" />
+                            </Grid>
+                        </Border>
+
+                        <StackPanel x:Name="StatusTextPanel"
+                                    Grid.Column="1"
+                                    Margin="12,8,12,8"
+                                    VerticalAlignment="Center">
+                            <TextBlock x:Name="StatusTitleText"
+                                       Text="{Binding StatusText}"
+                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                       FontSize="15"
+                                       FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock x:Name="StatusSubtitleText"
+                                       Text="{Binding CompactStatusMessage}"
+                                       Margin="0,2,0,0"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       FontSize="11"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+
+                <Grid x:Name="ExpandedRegion"
+                      Grid.Row="1"
+                      Height="0"
+                      VerticalAlignment="Top"
+                      ClipToBounds="True">
+                    <Grid.RenderTransform>
+                        <TranslateTransform x:Name="ExpandedRegionTranslateTransform"
+                                            Y="-10" />
+                    </Grid.RenderTransform>
+
+                    <!-- Approval/choice region. Adjust minimum height in UI/IslandLayout.cs -->
+                    <Grid x:Name="ActionPanel"
+                          MinHeight="{x:Static ui:IslandLayout.ActionPanelMinHeight}"
+                          Opacity="0">
+                        <Grid.Margin>
+                            <Thickness Top="{x:Static ui:IslandLayout.ExpandedRegionTopSpacing}" />
+                        </Grid.Margin>
+                        <Grid Margin="2,0,2,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <StackPanel x:Name="ActionPanelHeader">
+                                <TextBlock Text="{Binding StatusMessage}"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                           FontSize="13"
+                                           FontWeight="SemiBold"
+                                           Margin="0,0,0,4"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding PanelHintText}"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           FontSize="11"
+                                           Margin="0,0,0,12"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+
+                            <UniformGrid x:Name="ActionButtonsPanel"
+                                         Grid.Row="1"
+                                         Margin="0,0,0,0"
+                                         Columns="3"
+                                         Opacity="0">
+                                <Button Command="{Binding ApproveCommand}"
+                                        Content="{Binding PrimaryActionText}"
+                                        Style="{StaticResource AccentActionButtonStyle}"
+                                        Visibility="{Binding IsPrimaryActionVisible, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <Button Command="{Binding RejectCommand}"
+                                        Content="{Binding SecondaryActionText}"
+                                        Style="{StaticResource SecondaryActionButtonStyle}"
+                                        Visibility="{Binding IsSecondaryActionVisible, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <Button Command="{Binding SnoozeCommand}"
+                                        Content="{Binding TertiaryActionText}"
+                                        Style="{StaticResource TertiaryActionButtonStyle}"
+                                        Visibility="{Binding IsTertiaryActionVisible, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                            </UniformGrid>
+                        </Grid>
+                    </Grid>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
