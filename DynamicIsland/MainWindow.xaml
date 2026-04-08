@@ -32,16 +32,12 @@
     <Grid x:Name="RootGrid"
           Background="Transparent"
           MouseLeftButtonDown="RootGrid_OnMouseLeftButtonDown">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="62*"/>
-            <ColumnDefinition Width="3*"/>
-        </Grid.ColumnDefinitions>
         <!-- Main island shell. Adjust collapsed/expanded size in UI/IslandLayout.cs -->
         <Border x:Name="MainSurface"
                 Width="{x:Static ui:IslandLayout.CollapsedWidth}"
                 Height="{x:Static ui:IslandLayout.CollapsedHeight}"
                 Padding="14,12"
-                HorizontalAlignment="Left"
+                HorizontalAlignment="Center"
                 VerticalAlignment="Top"
                 BorderThickness="1"
                 ClipToBounds="True"
@@ -51,7 +47,9 @@
             <Border.CornerRadius>
                 <x:Static Member="ui:IslandLayout.CollapsedShellCornerRadius" />
             </Border.CornerRadius>
-            <Border.Margin>94,0,0,0</Border.Margin>
+            <Border.Margin>
+                <Thickness Top="{x:Static ui:IslandLayout.TopMargin}" />
+            </Border.Margin>
             <Border.Background>
                 <SolidColorBrush x:Name="MainSurfaceBackgroundBrush"
                                  Color="#FF000000" />

@@ -32,10 +32,13 @@ public static class IslandLayout
     // Outer shell radii used by MainWindow.xaml.cs.
     public static double CollapsedShellRadius => 32;
     public static double ExpandedShellRadius => 26;
-    public static CornerRadius CollapsedShellCornerRadius => new(CollapsedShellRadius);
+    public static CornerRadius CollapsedShellCornerRadius => new(0, 0, CollapsedShellRadius, CollapsedShellRadius);
+    public static CornerRadius ExpandedShellCornerRadius => new(0, 0, ExpandedShellRadius, ExpandedShellRadius);
 
-    // Top inverse-corner notch size.
-    // Used by MainWindow.xaml.cs when building the custom clip for MainSurface.
-    public static double TopInverseCornerRadius => 18;
-    public static double BottomCornerRadius => 26;
+    // Custom shell clip profile used by MainWindow.xaml.cs.
+    // These match the user's reference shoulders: 28x12 with a small rounded transition.
+    public static double TopShoulderWidth => 12;
+    public static double TopShoulderHeight => 8;
+    public static double TopShoulderRadius => 0;
+    public static double BottomCornerRadius => 24;
 }

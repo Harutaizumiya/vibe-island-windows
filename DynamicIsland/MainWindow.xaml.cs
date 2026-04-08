@@ -138,8 +138,9 @@ public partial class MainWindow : Window
         var targetExpandedRegionHeight = isExpanded ? IslandLayout.ExpandedRegionExpandedHeight : 0.0;
         var targetPanelOpacity = isExpanded ? 1.0 : 0.0;
         var targetOffset = isExpanded ? 0.0 : -10.0;
-        var targetMainSurfaceCornerRadius = new CornerRadius(
-            isExpanded ? IslandLayout.ExpandedShellRadius : IslandLayout.CollapsedShellRadius);
+        var targetMainSurfaceCornerRadius = isExpanded
+            ? IslandLayout.ExpandedShellCornerRadius
+            : IslandLayout.CollapsedShellCornerRadius;
 
         if (!animate)
         {
@@ -277,44 +278,32 @@ public partial class MainWindow : Window
             return;
         }
 
-        var topInverseRadius = IslandLayout.TopInverseCornerRadius;
-        var bottomRadius = IslandLayout.BottomCornerRadius;
+        var bottomRadius = Math.Max(0, Math.Min(IslandLayout.BottomCornerRadius, height / 2.0));
 
-        var geometry = new StreamGeometry();
-        using var context = geometry.Open();
+        var bodyGeometry = new StreamGeometry();
+        using (var context = bodyGeometry.Open())
+        {
+            context.BeginFigure(new System.Windows.Point(0, 0), isFilled: true, isClosed: true);
+            context.LineTo(new System.Windows.Point(width, 0), isStroked: true, isSmoothJoin: false);
+            context.LineTo(new System.Windows.Point(width, height - bottomRadius), isStroked: true, isSmoothJoin: false);
+            context.QuadraticBezierTo(
+                new System.Windows.Point(width, height),
+                new System.Windows.Point(width - bottomRadius, height),
+                isStroked: true,
+                isSmoothJoin: true);
 
-        context.BeginFigure(new System.Windows.Point(topInverseRadius, 0), isFilled: true, isClosed: true);
-        context.LineTo(new System.Windows.Point(width - topInverseRadius, 0), isStroked: true, isSmoothJoin: false);
+            context.LineTo(new System.Windows.Point(bottomRadius, height), isStroked: true, isSmoothJoin: false);
+            context.QuadraticBezierTo(
+                new System.Windows.Point(0, height),
+                new System.Windows.Point(0, height - bottomRadius),
+                isStroked: true,
+                isSmoothJoin: true);
 
-        context.QuadraticBezierTo(
-            new System.Windows.Point(width, 0),
-            new System.Windows.Point(width, topInverseRadius),
-            isStroked: true,
-            isSmoothJoin: true);
+            context.LineTo(new System.Windows.Point(0, 0), isStroked: true, isSmoothJoin: false);
+        }
 
-        context.LineTo(new System.Windows.Point(width, height - bottomRadius), isStroked: true, isSmoothJoin: false);
-        context.QuadraticBezierTo(
-            new System.Windows.Point(width, height),
-            new System.Windows.Point(width - bottomRadius, height),
-            isStroked: true,
-            isSmoothJoin: true);
-
-        context.LineTo(new System.Windows.Point(bottomRadius, height), isStroked: true, isSmoothJoin: false);
-        context.QuadraticBezierTo(
-            new System.Windows.Point(0, height),
-            new System.Windows.Point(0, height - bottomRadius),
-            isStroked: true,
-            isSmoothJoin: true);
-
-        context.LineTo(new System.Windows.Point(0, topInverseRadius), isStroked: true, isSmoothJoin: false);
-        context.QuadraticBezierTo(
-            new System.Windows.Point(0, 0),
-            new System.Windows.Point(topInverseRadius, 0),
-            isStroked: true,
-            isSmoothJoin: true);
-
-        geometry.Freeze();
-        MainSurface.Clip = geometry;
+        bodyGeometry.Freeze();
+        MainSurface.Clip = bodyGeometry;
     }
 
     private static T? FindAncestor<T>(DependencyObject? current)
