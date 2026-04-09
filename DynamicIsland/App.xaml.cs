@@ -8,7 +8,7 @@ namespace DynamicIsland;
 
 public partial class App : System.Windows.Application
 {
-    private IClaudecodeService? _service;
+    private ICodexStatusService? _service;
     private StatusViewModel? _viewModel;
     private TrayIconService? _trayIconService;
 
@@ -20,7 +20,7 @@ public partial class App : System.Windows.Application
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
 
-        _service = new MockClaudecodeService();
+        _service = CreateStatusService();
         var layoutSettings = (IslandLayoutSettings)Resources["IslandLayoutConfig"];
         _viewModel = new StatusViewModel(_service, layoutSettings);
         DiagnosticsLogger.Write("Service and view model created.");
@@ -43,6 +43,19 @@ public partial class App : System.Windows.Application
         _viewModel?.Dispose();
         _service?.Dispose();
         base.OnExit(e);
+    }
+
+    private static ICodexStatusService CreateStatusService()
+    {
+        var mode = Environment.GetEnvironmentVariable("DYNAMIC_ISLAND_SERVICE_MODE");
+        if (string.Equals(mode, "mock", StringComparison.OrdinalIgnoreCase))
+        {
+            DiagnosticsLogger.Write("Using mock Codex status service.");
+            return new MockCodexStatusService();
+        }
+
+        DiagnosticsLogger.Write("Using Codex CLI status service.");
+        return new CodexCliStatusService();
     }
 
     private void OnDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)

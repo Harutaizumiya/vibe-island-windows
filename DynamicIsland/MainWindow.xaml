@@ -147,7 +147,7 @@
                                             Y="-10" />
                     </Grid.RenderTransform>
 
-                    <!-- Approval/choice region sizing follows IslandLayoutConfig. -->
+                    <!-- Expanded detail region sizing follows IslandLayoutConfig. -->
                     <Grid x:Name="ActionPanel"
                           MinHeight="{Binding Source={StaticResource IslandLayoutConfig}, Path=ActionPanelMinHeight}"
                           Opacity="0">
@@ -180,15 +180,15 @@
                                          Margin="0,0,0,0"
                                          Columns="3"
                                          Opacity="0">
-                                <Button Command="{Binding ApproveCommand}"
+                                <Button Command="{Binding PrimaryActionCommand}"
                                         Content="{Binding PrimaryActionText}"
                                         Style="{StaticResource AccentActionButtonStyle}"
                                         Visibility="{Binding IsPrimaryActionVisible, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                                <Button Command="{Binding RejectCommand}"
+                                <Button Command="{Binding SecondaryActionCommand}"
                                         Content="{Binding SecondaryActionText}"
                                         Style="{StaticResource SecondaryActionButtonStyle}"
                                         Visibility="{Binding IsSecondaryActionVisible, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                                <Button Command="{Binding SnoozeCommand}"
+                                <Button Command="{Binding TertiaryActionCommand}"
                                         Content="{Binding TertiaryActionText}"
                                         Style="{StaticResource TertiaryActionButtonStyle}"
                                         Visibility="{Binding IsTertiaryActionVisible, Converter={StaticResource BooleanToVisibilityConverter}}" />

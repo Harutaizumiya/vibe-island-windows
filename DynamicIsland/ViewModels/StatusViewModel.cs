@@ -8,12 +8,12 @@ namespace DynamicIsland.ViewModels;
 
 public sealed class StatusViewModel : ObservableObject, IDisposable
 {
-    private readonly IClaudecodeService _service;
+    private readonly ICodexStatusService _service;
     private readonly IslandLayoutSettings _layoutSettings;
     private readonly DispatcherTimer _glyphTimer;
     private readonly string[] _workingGlyphFrames = ["|", "/", "-", "\\"];
 
-    private ClaudecodeStatus _currentStatus = ClaudecodeStatus.Idle;
+    private CodexSessionStatus _currentStatus = CodexSessionStatus.Idle;
     private string _statusText = "Booting";
     private string _statusMessage = "Preparing the island services.";
     private string _compactStatusMessage = "Preparing the island services.";
@@ -26,16 +26,16 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private bool _isManualExpanded;
     private bool _isHoverExpanded;
     private double _collapsedWidth;
-    private string _primaryActionText = "Approve";
-    private string _secondaryActionText = "Reject";
-    private string _tertiaryActionText = "Later";
+    private string _primaryActionText = string.Empty;
+    private string _secondaryActionText = string.Empty;
+    private string _tertiaryActionText = string.Empty;
     private string _panelHintText = "Waiting for the next actionable state.";
     private bool _isPrimaryActionVisible;
     private bool _isSecondaryActionVisible;
     private bool _isTertiaryActionVisible;
     private int _glyphFrameIndex;
 
-    public StatusViewModel(IClaudecodeService service, IslandLayoutSettings layoutSettings)
+    public StatusViewModel(ICodexStatusService service, IslandLayoutSettings layoutSettings)
     {
         _service = service;
         _layoutSettings = layoutSettings;
@@ -49,12 +49,12 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         _collapsedWidth = _layoutSettings.GetCollapsedWidth(_currentStatus);
 
         ToggleExpandCommand = new RelayCommand(ToggleExpand);
-        ApproveCommand = new AsyncRelayCommand(ApproveAsync, () => IsPrimaryActionVisible);
-        RejectCommand = new AsyncRelayCommand(RejectAsync, () => IsSecondaryActionVisible);
-        SnoozeCommand = new AsyncRelayCommand(SnoozeAsync, () => IsTertiaryActionVisible);
+        PrimaryActionCommand = new AsyncRelayCommand(ExecutePrimaryActionAsync, () => IsPrimaryActionVisible);
+        SecondaryActionCommand = new AsyncRelayCommand(ExecuteSecondaryActionAsync, () => IsSecondaryActionVisible);
+        TertiaryActionCommand = new AsyncRelayCommand(ExecuteTertiaryActionAsync, () => IsTertiaryActionVisible);
     }
 
-    public ClaudecodeStatus CurrentStatus
+    public CodexSessionStatus CurrentStatus
     {
         get => _currentStatus;
         private set => SetProperty(ref _currentStatus, value);
@@ -182,11 +182,11 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     public RelayCommand ToggleExpandCommand { get; }
 
-    public AsyncRelayCommand ApproveCommand { get; }
+    public AsyncRelayCommand PrimaryActionCommand { get; }
 
-    public AsyncRelayCommand RejectCommand { get; }
+    public AsyncRelayCommand SecondaryActionCommand { get; }
 
-    public AsyncRelayCommand SnoozeCommand { get; }
+    public AsyncRelayCommand TertiaryActionCommand { get; }
 
     public async Task InitializeAsync()
     {
@@ -236,21 +236,29 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         _glyphTimer.Stop();
     }
 
-    private async Task ApproveAsync()
+    private async Task ExecutePrimaryActionAsync()
     {
-        await _service.ApproveAsync();
-        RefreshCommands();
+        await ExecuteActionAsync(PrimaryActionText);
     }
 
-    private async Task RejectAsync()
+    private async Task ExecuteSecondaryActionAsync()
     {
-        await _service.RejectAsync();
-        RefreshCommands();
+        await ExecuteActionAsync(SecondaryActionText);
     }
 
-    private async Task SnoozeAsync()
+    private async Task ExecuteTertiaryActionAsync()
     {
-        await _service.SnoozeAsync();
+        await ExecuteActionAsync(TertiaryActionText);
+    }
+
+    private async Task ExecuteActionAsync(string actionId)
+    {
+        if (string.IsNullOrWhiteSpace(actionId))
+        {
+            return;
+        }
+
+        await _service.ExecuteActionAsync(actionId);
         RefreshCommands();
     }
 
@@ -269,24 +277,24 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         IsExpanded = !IsExpanded;
     }
 
-    private void OnTaskUpdated(object? sender, ClaudecodeTask task)
+    private void OnTaskUpdated(object? sender, CodexTask task)
     {
         ApplyTask(task);
     }
 
-    private void ApplyTask(ClaudecodeTask task)
+    private void ApplyTask(CodexTask task)
     {
         DiagnosticsLogger.Write($"Task update: status={task.Status}, title={task.Title}, actions={task.AvailableActions.Count}");
         CurrentStatus = task.Status;
         StatusText = task.Title;
         StatusMessage = task.Message;
         CompactStatusMessage = BuildCompactStatusMessage(task);
-        IsBusy = task.Status == ClaudecodeStatus.Working;
-        IsActionRequired = task.Status is ClaudecodeStatus.NeedsApproval or ClaudecodeStatus.NeedsChoice;
+        IsBusy = task.Status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing;
+        IsActionRequired = task.AvailableActions.Count > 0;
 
-        PrimaryActionText = task.AvailableActions.ElementAtOrDefault(0) ?? "Approve";
-        SecondaryActionText = task.AvailableActions.ElementAtOrDefault(1) ?? "Reject";
-        TertiaryActionText = task.AvailableActions.ElementAtOrDefault(2) ?? "Later";
+        PrimaryActionText = task.AvailableActions.ElementAtOrDefault(0) ?? string.Empty;
+        SecondaryActionText = task.AvailableActions.ElementAtOrDefault(1) ?? string.Empty;
+        TertiaryActionText = task.AvailableActions.ElementAtOrDefault(2) ?? string.Empty;
 
         IsPrimaryActionVisible = task.AvailableActions.Count > 0;
         IsSecondaryActionVisible = task.AvailableActions.Count > 1;
@@ -324,38 +332,47 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         }
     }
 
-    private string BuildPanelHint(ClaudecodeTask task)
+    private string BuildPanelHint(CodexTask task)
     {
         return task.Status switch
         {
-            ClaudecodeStatus.Working => "The island is live and will expand again when an action is needed.",
-            ClaudecodeStatus.NeedsApproval => "Review the request below and choose how Claudecode should proceed.",
-            ClaudecodeStatus.NeedsChoice => "This step needs a user decision before the mock workflow can continue.",
-            ClaudecodeStatus.Error => "The current flow was interrupted. It will recover automatically after a short pause.",
+            CodexSessionStatus.Processing => "Codex CLI is still thinking. The island will keep following the current turn.",
+            CodexSessionStatus.RunningTool => "A tool call is in flight. The panel stays collapsed unless you open it.",
+            CodexSessionStatus.Finishing => "Codex CLI is preparing the final answer for the current turn.",
+            CodexSessionStatus.Completed => "This turn completed. The island will fall back to idle after a short cooldown.",
+            CodexSessionStatus.Stalled => "No new session events arrived for 20 seconds. Check the CLI if this persists.",
+            CodexSessionStatus.Interrupted => "The current turn was interrupted or rolled back before completion.",
+            CodexSessionStatus.Unknown => "The live watcher could not determine the current session state.",
             _ => "No action is required right now. Tap the island to inspect the latest status message."
         };
     }
 
-    private string BuildCompactStatusMessage(ClaudecodeTask task)
+    private string BuildCompactStatusMessage(CodexTask task)
     {
         return task.Status switch
         {
-            ClaudecodeStatus.Working => "Applying background progress",
-            ClaudecodeStatus.NeedsApproval => "Approval needed",
-            ClaudecodeStatus.NeedsChoice => "Decision needed",
-            ClaudecodeStatus.Error => "Needs recovery",
-            _ => "Standing by"
+            CodexSessionStatus.Processing => "Thinking",
+            CodexSessionStatus.RunningTool => "Tool running",
+            CodexSessionStatus.Finishing => "Finishing",
+            CodexSessionStatus.Completed => "Turn complete",
+            CodexSessionStatus.Stalled => "No new events",
+            CodexSessionStatus.Interrupted => "Turn interrupted",
+            CodexSessionStatus.Unknown => "Watcher issue",
+            _ => "Waiting for Codex CLI"
         };
     }
 
-    private static string BuildActivityBadge(ClaudecodeStatus status)
+    private static string BuildActivityBadge(CodexSessionStatus status)
     {
         return status switch
         {
-            ClaudecodeStatus.Working => "LIVE",
-            ClaudecodeStatus.NeedsApproval => "REVIEW",
-            ClaudecodeStatus.NeedsChoice => "CHOOSE",
-            ClaudecodeStatus.Error => "RETRY",
+            CodexSessionStatus.Processing => "LIVE",
+            CodexSessionStatus.RunningTool => "TOOL",
+            CodexSessionStatus.Finishing => "DONE",
+            CodexSessionStatus.Completed => "OK",
+            CodexSessionStatus.Stalled => "WAIT",
+            CodexSessionStatus.Interrupted => "STOP",
+            CodexSessionStatus.Unknown => "WARN",
             _ => "READY"
         };
     }
@@ -376,14 +393,15 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         UpdateStaticGlyph(CurrentStatus);
     }
 
-    private void UpdateStaticGlyph(ClaudecodeStatus status)
+    private void UpdateStaticGlyph(CodexSessionStatus status)
     {
         StatusGlyph = status switch
         {
-            ClaudecodeStatus.NeedsApproval => "!",
-            ClaudecodeStatus.NeedsChoice => "?",
-            ClaudecodeStatus.Error => "x",
-            ClaudecodeStatus.Idle => "o",
+            CodexSessionStatus.Completed => "+",
+            CodexSessionStatus.Stalled => "!",
+            CodexSessionStatus.Interrupted => "x",
+            CodexSessionStatus.Unknown => "?",
+            CodexSessionStatus.Idle => "o",
             _ => _workingGlyphFrames[_glyphFrameIndex % _workingGlyphFrames.Length]
         };
     }
@@ -404,10 +422,8 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private void OnLayoutSettingsPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(IslandLayoutSettings.IdleCollapsedWidth)
-            or nameof(IslandLayoutSettings.WorkingCollapsedWidth)
-            or nameof(IslandLayoutSettings.ApprovalCollapsedWidth)
-            or nameof(IslandLayoutSettings.ChoiceCollapsedWidth)
-            or nameof(IslandLayoutSettings.ErrorCollapsedWidth))
+            or nameof(IslandLayoutSettings.BusyCollapsedWidth)
+            or nameof(IslandLayoutSettings.AttentionCollapsedWidth))
         {
             CollapsedWidth = _layoutSettings.GetCollapsedWidth(CurrentStatus);
         }
@@ -427,8 +443,8 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     private void RefreshCommands()
     {
-        ApproveCommand.RaiseCanExecuteChanged();
-        RejectCommand.RaiseCanExecuteChanged();
-        SnoozeCommand.RaiseCanExecuteChanged();
+        PrimaryActionCommand.RaiseCanExecuteChanged();
+        SecondaryActionCommand.RaiseCanExecuteChanged();
+        TertiaryActionCommand.RaiseCanExecuteChanged();
     }
 }

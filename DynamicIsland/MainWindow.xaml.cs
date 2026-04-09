@@ -190,14 +190,17 @@ public partial class MainWindow : Window
         storyboard.Begin();
     }
 
-    private void ApplyStatusPalette(ClaudecodeStatus status, bool animate)
+    private void ApplyStatusPalette(CodexSessionStatus status, bool animate)
     {
         var palette = status switch
         {
-            ClaudecodeStatus.Working => new IslandPalette("#FF000000", "#FF181818", "#FFF4F4F4"),
-            ClaudecodeStatus.NeedsApproval => new IslandPalette("#FF000000", "#FF202020", "#FFFFFFFF"),
-            ClaudecodeStatus.NeedsChoice => new IslandPalette("#FF000000", "#FF1C1C1C", "#FFF0F0F0"),
-            ClaudecodeStatus.Error => new IslandPalette("#FF000000", "#FF222222", "#FFE8E8E8"),
+            CodexSessionStatus.RunningTool => new IslandPalette("#FF000000", "#FF212121", "#FF8DEBFF"),
+            CodexSessionStatus.Processing => new IslandPalette("#FF000000", "#FF181818", "#FFF4F4F4"),
+            CodexSessionStatus.Finishing => new IslandPalette("#FF000000", "#FF1D1D1D", "#FFC6FFD8"),
+            CodexSessionStatus.Completed => new IslandPalette("#FF000000", "#FF1A241C", "#FFA6F0B7"),
+            CodexSessionStatus.Stalled => new IslandPalette("#FF000000", "#FF322918", "#FFFFD17A"),
+            CodexSessionStatus.Interrupted => new IslandPalette("#FF000000", "#FF2A1818", "#FFFF9A9A"),
+            CodexSessionStatus.Unknown => new IslandPalette("#FF000000", "#FF202020", "#FFFFE68A"),
             _ => new IslandPalette("#FF000000", "#FF161616", "#FFF2F2F2")
         };
 
@@ -212,7 +215,7 @@ public partial class MainWindow : Window
             BlurRadius = 12,
             ShadowDepth = 0,
             Color = accentColor,
-            Opacity = status is ClaudecodeStatus.Working or ClaudecodeStatus.NeedsApproval or ClaudecodeStatus.NeedsChoice ? 0.08 : 0.05
+            Opacity = status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing ? 0.08 : 0.05
         };
     }
 

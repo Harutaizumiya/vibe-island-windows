@@ -9,11 +9,9 @@ public sealed class IslandLayoutSettings : ObservableObject
     private double _windowWidth = 520;
     private double _windowHeight = 300;
     private double _screenTopMargin;
-    private double _idleCollapsedWidth = 332;
-    private double _workingCollapsedWidth = 372;
-    private double _approvalCollapsedWidth = 364;
-    private double _choiceCollapsedWidth = 364;
-    private double _errorCollapsedWidth = 348;
+    private double _idleCollapsedWidth = 288;
+    private double _busyCollapsedWidth = 372;
+    private double _attentionCollapsedWidth = 348;
     private double _expandedWidth = 492;
     private double _collapsedHeight = 88;
     private double _expandedHeight = 188;
@@ -50,28 +48,16 @@ public sealed class IslandLayoutSettings : ObservableObject
         set => SetProperty(ref _idleCollapsedWidth, value);
     }
 
-    public double WorkingCollapsedWidth
+    public double BusyCollapsedWidth
     {
-        get => _workingCollapsedWidth;
-        set => SetProperty(ref _workingCollapsedWidth, value);
+        get => _busyCollapsedWidth;
+        set => SetProperty(ref _busyCollapsedWidth, value);
     }
 
-    public double ApprovalCollapsedWidth
+    public double AttentionCollapsedWidth
     {
-        get => _approvalCollapsedWidth;
-        set => SetProperty(ref _approvalCollapsedWidth, value);
-    }
-
-    public double ChoiceCollapsedWidth
-    {
-        get => _choiceCollapsedWidth;
-        set => SetProperty(ref _choiceCollapsedWidth, value);
-    }
-
-    public double ErrorCollapsedWidth
-    {
-        get => _errorCollapsedWidth;
-        set => SetProperty(ref _errorCollapsedWidth, value);
+        get => _attentionCollapsedWidth;
+        set => SetProperty(ref _attentionCollapsedWidth, value);
     }
 
     public double ExpandedWidth
@@ -190,14 +176,12 @@ public sealed class IslandLayoutSettings : ObservableObject
         set => SetProperty(ref _bottomCornerRadius, value);
     }
 
-    public double GetCollapsedWidth(ClaudecodeStatus status)
+    public double GetCollapsedWidth(CodexSessionStatus status)
     {
         return status switch
         {
-            ClaudecodeStatus.Working => WorkingCollapsedWidth,
-            ClaudecodeStatus.NeedsApproval => ApprovalCollapsedWidth,
-            ClaudecodeStatus.NeedsChoice => ChoiceCollapsedWidth,
-            ClaudecodeStatus.Error => ErrorCollapsedWidth,
+            CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing => BusyCollapsedWidth,
+            CodexSessionStatus.Stalled or CodexSessionStatus.Interrupted or CodexSessionStatus.Unknown => AttentionCollapsedWidth,
             _ => IdleCollapsedWidth
         };
     }
