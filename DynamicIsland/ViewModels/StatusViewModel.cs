@@ -11,7 +11,9 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private readonly ICodexStatusService _service;
     private readonly IslandLayoutSettings _layoutSettings;
     private readonly DispatcherTimer _glyphTimer;
-    private readonly string[] _workingGlyphFrames = ["|", "/", "-", "\\"];
+    private readonly DispatcherTimer _approvalFeedbackTimer;
+    private readonly string[] _workingGlyphFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    private const string ApprovalGlyph = "✓";
 
     private CodexSessionStatus _currentStatus = CodexSessionStatus.Idle;
     private string _statusText = "Booting";
@@ -33,6 +35,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private bool _isPrimaryActionVisible;
     private bool _isSecondaryActionVisible;
     private bool _isTertiaryActionVisible;
+    private bool _isApprovalFeedbackVisible;
     private int _glyphFrameIndex;
 
     public StatusViewModel(ICodexStatusService service, IslandLayoutSettings layoutSettings)
@@ -46,6 +49,11 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
             Interval = TimeSpan.FromMilliseconds(140)
         };
         _glyphTimer.Tick += OnGlyphTimerTick;
+        _approvalFeedbackTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(1600)
+        };
+        _approvalFeedbackTimer.Tick += OnApprovalFeedbackTimerTick;
         _collapsedWidth = _layoutSettings.GetCollapsedWidth(_currentStatus);
 
         ToggleExpandCommand = new RelayCommand(ToggleExpand);
@@ -174,6 +182,12 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _isTertiaryActionVisible, value);
     }
 
+    public bool IsApprovalFeedbackVisible
+    {
+        get => _isApprovalFeedbackVisible;
+        private set => SetProperty(ref _isApprovalFeedbackVisible, value);
+    }
+
     public string ExpansionHint => IsExpanded
         ? "TAP TO CLOSE"
         : IsActionRequired
@@ -234,7 +248,9 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         _service.TaskUpdated -= OnTaskUpdated;
         _layoutSettings.PropertyChanged -= OnLayoutSettingsPropertyChanged;
         _glyphTimer.Tick -= OnGlyphTimerTick;
+        _approvalFeedbackTimer.Tick -= OnApprovalFeedbackTimerTick;
         _glyphTimer.Stop();
+        _approvalFeedbackTimer.Stop();
     }
 
     private async Task ExecutePrimaryActionAsync()
@@ -257,6 +273,11 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(actionId))
         {
             return;
+        }
+
+        if (IsApprovalAction(actionId))
+        {
+            ShowApprovalFeedback();
         }
 
         await _service.ExecuteActionAsync(actionId);
@@ -285,6 +306,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     private void ApplyTask(CodexTask task)
     {
+        ClearApprovalFeedback();
         DiagnosticsLogger.Write($"Task update: status={task.Status}, title={task.Title}, actions={task.AvailableActions.Count}");
         CurrentStatus = task.Status;
         StatusText = task.Title;
@@ -380,6 +402,13 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     private void UpdateGlyphAnimation()
     {
+        if (IsApprovalFeedbackVisible)
+        {
+            _glyphTimer.Stop();
+            StatusGlyph = ApprovalGlyph;
+            return;
+        }
+
         if (IsBusy)
         {
             if (!_glyphTimer.IsEnabled)
@@ -396,6 +425,12 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     private void UpdateStaticGlyph(CodexSessionStatus status)
     {
+        if (IsApprovalFeedbackVisible)
+        {
+            StatusGlyph = ApprovalGlyph;
+            return;
+        }
+
         StatusGlyph = status switch
         {
             CodexSessionStatus.Completed => "+",
@@ -418,6 +453,43 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     {
         _glyphFrameIndex = (_glyphFrameIndex + 1) % _workingGlyphFrames.Length;
         StatusGlyph = _workingGlyphFrames[_glyphFrameIndex];
+    }
+
+    private void ShowApprovalFeedback()
+    {
+        _approvalFeedbackTimer.Stop();
+        _isManualExpanded = false;
+        _isHoverExpanded = false;
+        IsExpanded = false;
+        IsApprovalFeedbackVisible = true;
+        _glyphTimer.Stop();
+        StatusGlyph = ApprovalGlyph;
+        _approvalFeedbackTimer.Start();
+    }
+
+    private void ClearApprovalFeedback()
+    {
+        if (!IsApprovalFeedbackVisible)
+        {
+            return;
+        }
+
+        _approvalFeedbackTimer.Stop();
+        IsApprovalFeedbackVisible = false;
+        UpdateGlyphAnimation();
+    }
+
+    private void OnApprovalFeedbackTimerTick(object? sender, EventArgs e)
+    {
+        ClearApprovalFeedback();
+    }
+
+    private static bool IsApprovalAction(string actionId)
+    {
+        return actionId.Contains("approve", StringComparison.OrdinalIgnoreCase)
+            || actionId.Contains("approval", StringComparison.OrdinalIgnoreCase)
+            || actionId.Contains("confirm", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(actionId, "allow", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnLayoutSettingsPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
