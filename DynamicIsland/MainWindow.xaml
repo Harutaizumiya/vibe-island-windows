@@ -110,7 +110,8 @@
                                                          Color="#FF6CE1FF" />
                                     </Ellipse.Fill>
                                 </Ellipse>
-                                <TextBlock Text="{Binding StatusGlyph}"
+                                <TextBlock x:Name="StatusGlyphText"
+                                           Text="{Binding StatusGlyph}"
                                            HorizontalAlignment="Center"
                                            VerticalAlignment="Center"
                                            FontFamily="Cascadia Code SemiBold"

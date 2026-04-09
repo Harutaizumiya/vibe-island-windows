@@ -120,6 +120,14 @@ public partial class MainWindow : Window
                 GlyphContainer,
                 StatusContentTranslateTransform).Begin();
         }
+        else if (e.PropertyName == nameof(StatusViewModel.IsApprovalFeedbackVisible))
+        {
+            ApplyStatusPalette(_viewModel.CurrentStatus, animate: true);
+            AnimationHelper.CreateStatusTransitionStoryboard(
+                StatusTextPanel,
+                GlyphContainer,
+                StatusContentTranslateTransform).Begin();
+        }
         else if (e.PropertyName == nameof(StatusViewModel.CollapsedWidth))
         {
             UpdateExpansionState(_viewModel.IsExpanded, animate: true);
@@ -204,18 +212,30 @@ public partial class MainWindow : Window
             _ => new IslandPalette("#FF000000", "#FF161616", "#FFF2F2F2")
         };
 
+        if (_viewModel.IsApprovalFeedbackVisible)
+        {
+            palette = new IslandPalette(palette.Background, "#FF21452B", "#FFA6F0B7");
+        }
+
         AnimationHelper.TransitionBrush(MainSurfaceBackgroundBrush, palette.Background, animate, durationMs: 320);
         AnimationHelper.TransitionBrush(MainSurfaceBorderBrush, palette.Border, animate, durationMs: 320);
         AnimationHelper.TransitionBrush(GlyphBorderBrush, palette.Border, animate, durationMs: 280);
         AnimationHelper.TransitionBrush(StatusAccentEllipseBrush, palette.Accent, animate, durationMs: 240);
 
         var accentColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(palette.Accent)!;
+        StatusGlyphText.Foreground = new SolidColorBrush(_viewModel.IsApprovalFeedbackVisible
+            ? accentColor
+            : (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#FFF5F5F5")!);
         GlyphContainer.Effect = new System.Windows.Media.Effects.DropShadowEffect
         {
             BlurRadius = 12,
             ShadowDepth = 0,
             Color = accentColor,
-            Opacity = status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing ? 0.08 : 0.05
+            Opacity = _viewModel.IsApprovalFeedbackVisible
+                ? 0.16
+                : status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing
+                    ? 0.08
+                    : 0.05
         };
     }
 
