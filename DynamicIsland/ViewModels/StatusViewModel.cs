@@ -195,8 +195,9 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
             ApplyTask(_service.CurrentTask);
         }
 
+        var startTask = _service.StartAsync();
         await RunBootAnimationAsync();
-        await _service.StartAsync();
+        await startTask;
     }
 
     public void Collapse()

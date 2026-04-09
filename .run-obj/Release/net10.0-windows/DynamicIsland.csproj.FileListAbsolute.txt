@@ -1,0 +1,6 @@
+C:\Users\Haruta\Documents\code\APP\vibe-island-windows\.run-obj\Release\net10.0-windows\Styles\Themes.baml
+C:\Users\Haruta\Documents\code\APP\vibe-island-windows\.run-obj\Release\net10.0-windows\MainWindow.g.cs
+C:\Users\Haruta\Documents\code\APP\vibe-island-windows\.run-obj\Release\net10.0-windows\App.g.cs
+C:\Users\Haruta\Documents\code\APP\vibe-island-windows\.run-obj\Release\net10.0-windows\GeneratedInternalTypeHelper.g.cs
+C:\Users\Haruta\Documents\code\APP\vibe-island-windows\.run-obj\Release\net10.0-windows\DynamicIsland_MarkupCompile.cache
+C:\Users\Haruta\Documents\code\APP\vibe-island-windows\.run-obj\Release\net10.0-windows\DynamicIsland_MarkupCompile.lref

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using DynamicIsland.Models;
 using DynamicIsland.Services;
+using DynamicIsland.ViewModels;
 
 var failures = new List<string>();
 
@@ -8,6 +9,9 @@ Run(nameof(TaskLifecycleTransitions), TaskLifecycleTransitions);
 Run(nameof(StalledAfterToolTimeout), StalledAfterToolTimeout);
 Run(nameof(InterruptedSignalsWin), InterruptedSignalsWin);
 Run(nameof(MalformedJsonIsIgnored), MalformedJsonIsIgnored);
+Run(nameof(MostRecentSessionWinsOverOlderHigherPriorityState), MostRecentSessionWinsOverOlderHigherPriorityState);
+Run(nameof(ActiveSessionWinsOverNewerStalledSession), ActiveSessionWinsOverNewerStalledSession);
+Run(nameof(ServiceStartsBeforeBootAnimationCompletes), ServiceStartsBeforeBootAnimationCompletes);
 
 if (failures.Count > 0)
 {
@@ -102,6 +106,69 @@ void MalformedJsonIsIgnored()
     {
         throw new InvalidOperationException("Malformed JSON should return a parse error.");
     }
+}
+
+void MostRecentSessionWinsOverOlderHigherPriorityState()
+{
+    var older = new CodexTask(
+        CodexSessionStatus.Stalled,
+        "Older session",
+        "No new events arrived.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T02:41:24Z"),
+        "older");
+
+    var newer = new CodexTask(
+        CodexSessionStatus.Processing,
+        "Newer session",
+        "Codex CLI is processing the current turn.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T02:42:24Z"),
+        "newer");
+
+    var selected = SelectCurrentTaskForTest(older, newer);
+    Expect(selected.SessionId ?? string.Empty, "newer", "newer session activity should beat older stalled activity");
+    Expect(selected.Status, CodexSessionStatus.Processing, "newer active session should remain visible");
+}
+
+void ActiveSessionWinsOverNewerStalledSession()
+{
+    var active = new CodexTask(
+        CodexSessionStatus.Processing,
+        "Active session",
+        "Codex CLI is processing the current turn.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T03:05:56.596Z"),
+        "active");
+
+    var stalled = new CodexTask(
+        CodexSessionStatus.Stalled,
+        "Older session",
+        "No new events arrived for 20 seconds.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T03:05:57.282Z"),
+        "stalled");
+
+    var selected = SelectCurrentTaskForTest(active, stalled);
+    Expect(selected.SessionId ?? string.Empty, "active", "active session should remain visible even if another session stalls later");
+    Expect(selected.Status, CodexSessionStatus.Processing, "stalled sessions should not displace active work");
+}
+
+void ServiceStartsBeforeBootAnimationCompletes()
+{
+    var service = new ProbeStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    var initializeTask = viewModel.InitializeAsync();
+    Thread.Sleep(150);
+
+    if (service.StartCallCount != 1)
+    {
+        throw new InvalidOperationException("status service should start immediately instead of waiting for boot animation");
+    }
+
+    initializeTask.GetAwaiter().GetResult();
+    viewModel.Dispose();
 }
 
 static void Apply(CodexCliSessionStateMachine machine, string jsonLine)
@@ -223,4 +290,71 @@ static string ThreadRolledBack(DateTimeOffset timestamp)
             num_turns = 1
         }
     });
+}
+
+static CodexTask SelectCurrentTaskForTest(params CodexTask[] tasks)
+{
+    var activeTasks = tasks
+        .Where(task => IsActiveStatusForTest(task.Status))
+        .OrderByDescending(task => task.UpdatedAt)
+        .ToList();
+
+    if (activeTasks.Count > 0)
+    {
+        return activeTasks[0];
+    }
+
+    return tasks
+        .OrderByDescending(task => task.UpdatedAt)
+        .ThenBy(task => GetPriorityForTest(task.Status))
+        .First();
+}
+
+static int GetPriorityForTest(CodexSessionStatus status)
+{
+    return status switch
+    {
+        CodexSessionStatus.Unknown => 0,
+        CodexSessionStatus.Interrupted => 1,
+        CodexSessionStatus.Stalled => 2,
+        CodexSessionStatus.RunningTool => 3,
+        CodexSessionStatus.Processing => 4,
+        CodexSessionStatus.Finishing => 5,
+        CodexSessionStatus.Completed => 6,
+        _ => 7
+    };
+}
+
+static bool IsActiveStatusForTest(CodexSessionStatus status)
+{
+    return status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing;
+}
+
+sealed class ProbeStatusService : ICodexStatusService
+{
+    public event EventHandler<CodexTask>? TaskUpdated;
+
+    public CodexTask? CurrentTask => null;
+
+    public int StartCallCount { get; private set; }
+
+    public Task StartAsync(CancellationToken cancellationToken = default)
+    {
+        StartCallCount++;
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.CompletedTask;
+    }
+
+    public Task ExecuteActionAsync(string actionId, CancellationToken cancellationToken = default)
+    {
+        return Task.CompletedTask;
+    }
+
+    public void Dispose()
+    {
+    }
 }

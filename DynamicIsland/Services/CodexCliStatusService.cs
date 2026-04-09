@@ -12,6 +12,7 @@ public sealed class CodexCliStatusService : ICodexStatusService
 {
     private static readonly Regex SessionIdRegex = new(@"(?<id>[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly TimeSpan ActiveSessionWindow = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan ActivePollInterval = TimeSpan.FromMilliseconds(350);
 
     private readonly object _gate = new();
     private readonly Dictionary<string, SessionTracker> _trackers = new(StringComparer.OrdinalIgnoreCase);
@@ -20,11 +21,13 @@ public sealed class CodexCliStatusService : ICodexStatusService
     private readonly string _sessionsRoot;
     private readonly string _sessionIndexPath;
     private readonly DispatcherTimer _clockTimer;
+    private readonly DispatcherTimer _activePollTimer;
 
     private FileSystemWatcher? _sessionsWatcher;
     private FileSystemWatcher? _sessionIndexWatcher;
     private bool _started;
     private bool _watchersHealthy = true;
+    private string _lastCandidateSummary = string.Empty;
 
     public CodexCliStatusService()
     {
@@ -36,6 +39,11 @@ public sealed class CodexCliStatusService : ICodexStatusService
             Interval = TimeSpan.FromSeconds(1)
         };
         _clockTimer.Tick += OnClockTick;
+        _activePollTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = ActivePollInterval
+        };
+        _activePollTimer.Tick += OnActivePollTick;
     }
 
     public event EventHandler<CodexTask>? TaskUpdated;
@@ -51,9 +59,10 @@ public sealed class CodexCliStatusService : ICodexStatusService
 
         _started = true;
         LoadSessionIndex();
-        DiscoverSessionFiles();
         InitializeWatchers();
+        DiscoverSessionFiles();
         _clockTimer.Start();
+        _activePollTimer.Start();
         PublishCurrentTask();
         return Task.CompletedTask;
     }
@@ -61,6 +70,7 @@ public sealed class CodexCliStatusService : ICodexStatusService
     public Task StopAsync(CancellationToken cancellationToken = default)
     {
         _clockTimer.Stop();
+        _activePollTimer.Stop();
         DisposeWatcher(_sessionsWatcher);
         _sessionsWatcher = null;
         DisposeWatcher(_sessionIndexWatcher);
@@ -79,6 +89,8 @@ public sealed class CodexCliStatusService : ICodexStatusService
     {
         _clockTimer.Tick -= OnClockTick;
         _clockTimer.Stop();
+        _activePollTimer.Tick -= OnActivePollTick;
+        _activePollTimer.Stop();
         DisposeWatcher(_sessionsWatcher);
         DisposeWatcher(_sessionIndexWatcher);
     }
@@ -120,16 +132,48 @@ public sealed class CodexCliStatusService : ICodexStatusService
             return;
         }
 
-        foreach (var path in Directory.EnumerateFiles(_sessionsRoot, "rollout-*.jsonl", SearchOption.AllDirectories))
+        foreach (var path in EnumerateBootstrapSessionFiles())
         {
             EnsureTracker(path, readFromStart: true);
         }
+    }
+
+    private IReadOnlyList<string> EnumerateBootstrapSessionFiles()
+    {
+        var cutoff = DateTime.UtcNow - ActiveSessionWindow;
+        var recentFiles = Directory.EnumerateFiles(_sessionsRoot, "rollout-*.jsonl", SearchOption.AllDirectories)
+            .Select(path => new FileInfo(path))
+            .Where(file => file.Exists)
+            .OrderByDescending(file => file.LastWriteTimeUtc)
+            .ToList();
+
+        var bootstrapFiles = recentFiles
+            .Where(file => file.LastWriteTimeUtc >= cutoff)
+            .Take(8)
+            .Select(file => file.FullName)
+            .ToList();
+
+        if (bootstrapFiles.Count > 0)
+        {
+            DiagnosticsLogger.Write($"Bootstrapping {bootstrapFiles.Count} recent session file(s).");
+            return bootstrapFiles;
+        }
+
+        var latestFile = recentFiles.FirstOrDefault()?.FullName;
+        if (latestFile is not null)
+        {
+            DiagnosticsLogger.Write("Bootstrapping the latest session file only.");
+            return [latestFile];
+        }
+
+        return Array.Empty<string>();
     }
 
     private void HandleSessionFileEvent(string path)
     {
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
         {
+            DiagnosticsLogger.Write($"Session file event: {path}");
             EnsureTracker(path, readFromStart: false);
             PublishCurrentTask();
         });
@@ -139,6 +183,7 @@ public sealed class CodexCliStatusService : ICodexStatusService
     {
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
         {
+            DiagnosticsLogger.Write("Session index event received.");
             LoadSessionIndex();
             PublishCurrentTask();
         });
@@ -242,6 +287,7 @@ public sealed class CodexCliStatusService : ICodexStatusService
 
         if (readFromStart && tracker.LastOffset == 0)
         {
+            DiagnosticsLogger.Write($"Bootstrapping tracker for session {tracker.SessionId} from start.");
             ReadAppendedContent(tracker, resetOffset: true);
             return;
         }
@@ -253,6 +299,10 @@ public sealed class CodexCliStatusService : ICodexStatusService
     {
         try
         {
+            var appliedLines = 0;
+            var ignoredLines = 0;
+            var beforeTask = tracker.StateMachine.BuildTask();
+
             using var stream = new FileStream(tracker.FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             if (resetOffset || stream.Length < tracker.LastOffset)
             {
@@ -286,8 +336,20 @@ public sealed class CodexCliStatusService : ICodexStatusService
 
                 if (!tracker.StateMachine.TryApplyLine(line, out var error) && error is not null)
                 {
+                    ignoredLines++;
                     DiagnosticsLogger.Write($"Ignored malformed JSONL line for session {tracker.SessionId}: {error}");
+                    continue;
                 }
+
+                appliedLines++;
+            }
+
+            var afterTask = tracker.StateMachine.BuildTask();
+            if (appliedLines > 0 || ignoredLines > 0 || beforeTask.Status != afterTask.Status || beforeTask.Message != afterTask.Message)
+            {
+                DiagnosticsLogger.Write(
+                    $"Session {tracker.SessionId} read result: applied={appliedLines}, ignored={ignoredLines}, " +
+                    $"status {beforeTask.Status}->{afterTask.Status}, updatedAt={afterTask.UpdatedAt:O}, message={TruncateForLog(afterTask.Message)}");
             }
         }
         catch (Exception ex)
@@ -307,6 +369,22 @@ public sealed class CodexCliStatusService : ICodexStatusService
         PublishCurrentTask();
     }
 
+    private void OnActivePollTick(object? sender, EventArgs e)
+    {
+        var pollCandidates = GetActivePollCandidates();
+        if (pollCandidates.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var tracker in pollCandidates)
+        {
+            ReadAppendedContent(tracker, resetOffset: false);
+        }
+
+        PublishCurrentTask();
+    }
+
     private void PublishCurrentTask(bool force = false)
     {
         var nextTask = BuildCurrentTask();
@@ -316,6 +394,9 @@ public sealed class CodexCliStatusService : ICodexStatusService
         }
 
         CurrentTask = nextTask;
+        DiagnosticsLogger.Write(
+            $"PublishCurrentTask -> status={nextTask.Status}, session={nextTask.SessionId ?? "none"}, " +
+            $"updatedAt={nextTask.UpdatedAt:O}, title={TruncateForLog(nextTask.Title)}, message={TruncateForLog(nextTask.Message)}");
         TaskUpdated?.Invoke(this, nextTask);
     }
 
@@ -335,9 +416,23 @@ public sealed class CodexCliStatusService : ICodexStatusService
         var candidates = _trackers.Values
             .Select(tracker => tracker.StateMachine.BuildTask())
             .Where(task => task.Status != CodexSessionStatus.Idle && now - task.UpdatedAt <= ActiveSessionWindow)
-            .OrderBy(task => GetPriority(task.Status))
-            .ThenByDescending(task => task.UpdatedAt)
             .ToList();
+
+        if (candidates.Count > 0)
+        {
+            var summary = string.Join(
+                " | ",
+                candidates.Take(5).Select(task => $"{task.SessionId}:{task.Status}@{task.UpdatedAt:HH:mm:ss.fff}"));
+            if (!string.Equals(_lastCandidateSummary, summary, StringComparison.Ordinal))
+            {
+                _lastCandidateSummary = summary;
+                DiagnosticsLogger.Write($"BuildCurrentTask candidates: {summary}");
+            }
+        }
+        else
+        {
+            _lastCandidateSummary = string.Empty;
+        }
 
         if (candidates.Count == 0)
         {
@@ -349,7 +444,41 @@ public sealed class CodexCliStatusService : ICodexStatusService
                 now);
         }
 
-        return candidates[0];
+        var activeCandidates = candidates
+            .Where(task => IsActiveStatus(task.Status))
+            .OrderByDescending(task => task.UpdatedAt)
+            .ToList();
+
+        if (activeCandidates.Count > 0)
+        {
+            return activeCandidates[0];
+        }
+
+        return candidates
+            .OrderByDescending(task => task.UpdatedAt)
+            .ThenBy(task => GetPriority(task.Status))
+            .First();
+    }
+
+    private IReadOnlyList<SessionTracker> GetActivePollCandidates()
+    {
+        var now = DateTimeOffset.UtcNow;
+        lock (_gate)
+        {
+            return _trackers.Values
+                .Select(tracker => new
+                {
+                    Tracker = tracker,
+                    Task = tracker.StateMachine.BuildTask()
+                })
+                .Where(entry =>
+                    entry.Task.Status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing
+                    && now - entry.Task.UpdatedAt <= ActiveSessionWindow)
+                .OrderByDescending(entry => entry.Task.UpdatedAt)
+                .Take(2)
+                .Select(entry => entry.Tracker)
+                .ToList();
+        }
     }
 
     private static int GetPriority(CodexSessionStatus status)
@@ -365,6 +494,11 @@ public sealed class CodexCliStatusService : ICodexStatusService
             CodexSessionStatus.Completed => 6,
             _ => 7
         };
+    }
+
+    private static bool IsActiveStatus(CodexSessionStatus status)
+    {
+        return status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing;
     }
 
     private static bool AreEquivalent(CodexTask? left, CodexTask right)
@@ -397,6 +531,13 @@ public sealed class CodexCliStatusService : ICodexStatusService
 
         watcher.EnableRaisingEvents = false;
         watcher.Dispose();
+    }
+
+    private static string TruncateForLog(string value)
+    {
+        const int maxLength = 120;
+        var singleLine = value.Replace("\r\n", " ", StringComparison.Ordinal).Replace('\n', ' ');
+        return singleLine.Length <= maxLength ? singleLine : singleLine[..maxLength] + "...";
     }
 
     private sealed class SessionTracker
