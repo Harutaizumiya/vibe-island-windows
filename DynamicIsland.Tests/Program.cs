@@ -8,6 +8,7 @@ Run(nameof(TaskLifecycleTransitions), TaskLifecycleTransitions);
 Run(nameof(StalledAfterToolTimeout), StalledAfterToolTimeout);
 Run(nameof(InterruptedSignalsWin), InterruptedSignalsWin);
 Run(nameof(MalformedJsonIsIgnored), MalformedJsonIsIgnored);
+Run(nameof(MostRecentSessionWinsOverOlderHigherPriorityState), MostRecentSessionWinsOverOlderHigherPriorityState);
 
 if (failures.Count > 0)
 {
@@ -102,6 +103,29 @@ void MalformedJsonIsIgnored()
     {
         throw new InvalidOperationException("Malformed JSON should return a parse error.");
     }
+}
+
+void MostRecentSessionWinsOverOlderHigherPriorityState()
+{
+    var older = new CodexTask(
+        CodexSessionStatus.Stalled,
+        "Older session",
+        "No new events arrived.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T02:41:24Z"),
+        "older");
+
+    var newer = new CodexTask(
+        CodexSessionStatus.Processing,
+        "Newer session",
+        "Codex CLI is processing the current turn.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T02:42:24Z"),
+        "newer");
+
+    var selected = SelectCurrentTaskForTest(older, newer);
+    Expect(selected.SessionId ?? string.Empty, "newer", "newer session activity should beat older stalled activity");
+    Expect(selected.Status, CodexSessionStatus.Processing, "newer active session should remain visible");
 }
 
 static void Apply(CodexCliSessionStateMachine machine, string jsonLine)
@@ -223,4 +247,27 @@ static string ThreadRolledBack(DateTimeOffset timestamp)
             num_turns = 1
         }
     });
+}
+
+static CodexTask SelectCurrentTaskForTest(params CodexTask[] tasks)
+{
+    return tasks
+        .OrderByDescending(task => task.UpdatedAt)
+        .ThenBy(task => GetPriorityForTest(task.Status))
+        .First();
+}
+
+static int GetPriorityForTest(CodexSessionStatus status)
+{
+    return status switch
+    {
+        CodexSessionStatus.Unknown => 0,
+        CodexSessionStatus.Interrupted => 1,
+        CodexSessionStatus.Stalled => 2,
+        CodexSessionStatus.RunningTool => 3,
+        CodexSessionStatus.Processing => 4,
+        CodexSessionStatus.Finishing => 5,
+        CodexSessionStatus.Completed => 6,
+        _ => 7
+    };
 }

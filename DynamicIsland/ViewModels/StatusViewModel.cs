@@ -11,7 +11,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private readonly ICodexStatusService _service;
     private readonly IslandLayoutSettings _layoutSettings;
     private readonly DispatcherTimer _glyphTimer;
-    private readonly string[] _workingGlyphFrames = ["|", "/", "-", "\\"];
+    private readonly string[] _workingGlyphFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     private CodexSessionStatus _currentStatus = CodexSessionStatus.Idle;
     private string _statusText = "Booting";

@@ -335,8 +335,8 @@ public sealed class CodexCliStatusService : ICodexStatusService
         var candidates = _trackers.Values
             .Select(tracker => tracker.StateMachine.BuildTask())
             .Where(task => task.Status != CodexSessionStatus.Idle && now - task.UpdatedAt <= ActiveSessionWindow)
-            .OrderBy(task => GetPriority(task.Status))
-            .ThenByDescending(task => task.UpdatedAt)
+            .OrderByDescending(task => task.UpdatedAt)
+            .ThenBy(task => GetPriority(task.Status))
             .ToList();
 
         if (candidates.Count == 0)
