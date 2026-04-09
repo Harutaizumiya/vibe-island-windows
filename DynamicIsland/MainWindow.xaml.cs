@@ -18,12 +18,14 @@ public partial class MainWindow : Window
     private const int WmDpiChanged = 0x02E0;
 
     private readonly StatusViewModel _viewModel;
+    private readonly IslandLayoutSettings _layoutSettings;
     private readonly DispatcherTimer _hoverTimer;
     private HwndSource? _hwndSource;
 
-    public MainWindow(StatusViewModel viewModel)
+    public MainWindow(StatusViewModel viewModel, IslandLayoutSettings layoutSettings)
     {
         _viewModel = viewModel;
+        _layoutSettings = layoutSettings;
         DataContext = _viewModel;
 
         InitializeComponent();
@@ -35,6 +37,7 @@ public partial class MainWindow : Window
         SizeChanged += OnSizeChanged;
         MainSurface.SizeChanged += OnMainSurfaceSizeChanged;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        _layoutSettings.PropertyChanged += OnLayoutSettingsPropertyChanged;
         _hoverTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = TimeSpan.FromSeconds(1)
@@ -48,7 +51,7 @@ public partial class MainWindow : Window
         ApplyStatusPalette(_viewModel.CurrentStatus, animate: false);
         UpdateExpansionState(_viewModel.IsExpanded, animate: false);
         ApplyMainSurfaceClip();
-        WindowPositionHelper.PositionTopCenter(this, topMargin: IslandLayout.ScreenTopMargin);
+        WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
         DiagnosticsLogger.Write($"Window positioned at Left={Left}, Top={Top}, Width={Width}, Height={Height}.");
     }
 
@@ -64,6 +67,7 @@ public partial class MainWindow : Window
     {
         DiagnosticsLogger.Write("MainWindow closed.");
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        _layoutSettings.PropertyChanged -= OnLayoutSettingsPropertyChanged;
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         MainSurface.SizeChanged -= OnMainSurfaceSizeChanged;
         _hoverTimer.Tick -= OnHoverTimerTick;
@@ -79,7 +83,7 @@ public partial class MainWindow : Window
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
         ApplyMainSurfaceClip();
-        WindowPositionHelper.PositionTopCenter(this, topMargin: IslandLayout.ScreenTopMargin);
+        WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
@@ -87,7 +91,7 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(() =>
         {
             ApplyMainSurfaceClip();
-            WindowPositionHelper.PositionTopCenter(this, topMargin: IslandLayout.ScreenTopMargin);
+            WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
         });
     }
 
@@ -128,19 +132,19 @@ public partial class MainWindow : Window
 
     private void UpdateExpansionState(bool isExpanded, bool animate)
     {
-        DiagnosticsLogger.Write($"UpdateExpansionState expanded={isExpanded}, animate={animate}, widthTarget={(isExpanded ? IslandLayout.ExpandedWidth : _viewModel.CollapsedWidth)}");
+        DiagnosticsLogger.Write($"UpdateExpansionState expanded={isExpanded}, animate={animate}, widthTarget={(isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth)}");
         var currentMainSurfaceCornerRadius = MainSurface.CornerRadius;
-        // Collapsed width still comes from StatusViewModel.GetCollapsedWidth().
-        var targetWidth = isExpanded ? IslandLayout.ExpandedWidth : _viewModel.CollapsedWidth;
-        // Expanded/collapsed shell height is centralized in UI/IslandLayout.cs.
-        var targetHeight = isExpanded ? IslandLayout.ExpandedHeight : IslandLayout.CollapsedHeight;
-        // Approval/choice content reveal height is centralized in UI/IslandLayout.cs.
-        var targetExpandedRegionHeight = isExpanded ? IslandLayout.ExpandedRegionExpandedHeight : 0.0;
+        // Collapsed width still comes from StatusViewModel and follows IslandLayoutConfig.
+        var targetWidth = isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth;
+        // Expanded/collapsed shell height is centralized in IslandLayoutConfig.
+        var targetHeight = isExpanded ? _layoutSettings.ExpandedHeight : _layoutSettings.CollapsedHeight;
+        // Approval/choice content reveal height is centralized in IslandLayoutConfig.
+        var targetExpandedRegionHeight = isExpanded ? _layoutSettings.ExpandedRegionExpandedHeight : 0.0;
         var targetPanelOpacity = isExpanded ? 1.0 : 0.0;
         var targetOffset = isExpanded ? 0.0 : -10.0;
         var targetMainSurfaceCornerRadius = isExpanded
-            ? IslandLayout.ExpandedShellCornerRadius
-            : IslandLayout.CollapsedShellCornerRadius;
+            ? _layoutSettings.ExpandedShellCornerRadius
+            : _layoutSettings.CollapsedShellCornerRadius;
 
         if (!animate)
         {
@@ -219,7 +223,7 @@ public partial class MainWindow : Window
             Dispatcher.BeginInvoke(() =>
             {
                 ApplyMainSurfaceClip();
-                WindowPositionHelper.PositionTopCenter(this, topMargin: IslandLayout.ScreenTopMargin);
+                WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
             });
         }
 
@@ -278,7 +282,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var bottomRadius = Math.Max(0, Math.Min(IslandLayout.BottomCornerRadius, height / 2.0));
+        var bottomRadius = Math.Max(0, Math.Min(_layoutSettings.BottomCornerRadius, height / 2.0));
 
         var bodyGeometry = new StreamGeometry();
         using (var context = bodyGeometry.Open())
@@ -304,6 +308,13 @@ public partial class MainWindow : Window
 
         bodyGeometry.Freeze();
         MainSurface.Clip = bodyGeometry;
+    }
+
+    private void OnLayoutSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        UpdateExpansionState(_viewModel.IsExpanded, animate: false);
+        ApplyMainSurfaceClip();
+        WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
     }
 
     private static T? FindAncestor<T>(DependencyObject? current)

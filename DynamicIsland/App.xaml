@@ -1,11 +1,32 @@
 <Application x:Class="DynamicIsland.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="clr-namespace:DynamicIsland.UI">
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Styles/Themes.xaml" />
             </ResourceDictionary.MergedDictionaries>
+            <ui:IslandLayoutSettings x:Key="IslandLayoutConfig"
+                                     WindowWidth="520"
+                                     WindowHeight="300"
+                                     ScreenTopMargin="0"
+                                     IdleCollapsedWidth="288"
+                                     WorkingCollapsedWidth="372"
+                                     ApprovalCollapsedWidth="364"
+                                     ChoiceCollapsedWidth="364"
+                                     ErrorCollapsedWidth="348"
+                                     ExpandedWidth="492"
+                                     CollapsedHeight="56"
+                                     ExpandedHeight="144"
+                                     StatusRowHeight="40"
+                                     ExpandedRegionExpandedHeight="104"
+                                     ActionPanelMinHeight="82"
+                                     TopMargin="0"
+                                     ExpandedRegionTopSpacing="4"
+                                     CollapsedShellRadius="24"
+                                     ExpandedShellRadius="24"
+                                     BottomCornerRadius="24" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

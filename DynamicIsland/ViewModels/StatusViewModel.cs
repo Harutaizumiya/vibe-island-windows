@@ -1,5 +1,6 @@
 using DynamicIsland.Models;
 using DynamicIsland.Services;
+using DynamicIsland.UI;
 using DynamicIsland.Utils;
 using System.Windows.Threading;
 
@@ -8,6 +9,7 @@ namespace DynamicIsland.ViewModels;
 public sealed class StatusViewModel : ObservableObject, IDisposable
 {
     private readonly IClaudecodeService _service;
+    private readonly IslandLayoutSettings _layoutSettings;
     private readonly DispatcherTimer _glyphTimer;
     private readonly string[] _workingGlyphFrames = ["|", "/", "-", "\\"];
 
@@ -23,7 +25,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private bool _isBouncing;
     private bool _isManualExpanded;
     private bool _isHoverExpanded;
-    private double _collapsedWidth = 332;
+    private double _collapsedWidth;
     private string _primaryActionText = "Approve";
     private string _secondaryActionText = "Reject";
     private string _tertiaryActionText = "Later";
@@ -33,15 +35,18 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private bool _isTertiaryActionVisible;
     private int _glyphFrameIndex;
 
-    public StatusViewModel(IClaudecodeService service)
+    public StatusViewModel(IClaudecodeService service, IslandLayoutSettings layoutSettings)
     {
         _service = service;
+        _layoutSettings = layoutSettings;
         _service.TaskUpdated += OnTaskUpdated;
+        _layoutSettings.PropertyChanged += OnLayoutSettingsPropertyChanged;
         _glyphTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = TimeSpan.FromMilliseconds(140)
         };
         _glyphTimer.Tick += OnGlyphTimerTick;
+        _collapsedWidth = _layoutSettings.GetCollapsedWidth(_currentStatus);
 
         ToggleExpandCommand = new RelayCommand(ToggleExpand);
         ApproveCommand = new AsyncRelayCommand(ApproveAsync, () => IsPrimaryActionVisible);
@@ -226,6 +231,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _service.TaskUpdated -= OnTaskUpdated;
+        _layoutSettings.PropertyChanged -= OnLayoutSettingsPropertyChanged;
         _glyphTimer.Tick -= OnGlyphTimerTick;
         _glyphTimer.Stop();
     }
@@ -301,7 +307,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
             IsExpanded = false;
         }
 
-        CollapsedWidth = GetCollapsedWidth(task.Status);
+        CollapsedWidth = _layoutSettings.GetCollapsedWidth(task.Status);
         UpdateStaticGlyph(task.Status);
 
         RefreshCommands();
@@ -354,18 +360,6 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         };
     }
 
-    private static double GetCollapsedWidth(ClaudecodeStatus status)
-    {
-        return status switch
-        {
-            ClaudecodeStatus.Working => 372,
-            ClaudecodeStatus.NeedsApproval => 364,
-            ClaudecodeStatus.NeedsChoice => 364,
-            ClaudecodeStatus.Error => 348,
-            _ => 332
-        };
-    }
-
     private void UpdateGlyphAnimation()
     {
         if (IsBusy)
@@ -405,6 +399,18 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     {
         _glyphFrameIndex = (_glyphFrameIndex + 1) % _workingGlyphFrames.Length;
         StatusGlyph = _workingGlyphFrames[_glyphFrameIndex];
+    }
+
+    private void OnLayoutSettingsPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(IslandLayoutSettings.IdleCollapsedWidth)
+            or nameof(IslandLayoutSettings.WorkingCollapsedWidth)
+            or nameof(IslandLayoutSettings.ApprovalCollapsedWidth)
+            or nameof(IslandLayoutSettings.ChoiceCollapsedWidth)
+            or nameof(IslandLayoutSettings.ErrorCollapsedWidth))
+        {
+            CollapsedWidth = _layoutSettings.GetCollapsedWidth(CurrentStatus);
+        }
     }
 
     private bool SetExpanded(bool value)

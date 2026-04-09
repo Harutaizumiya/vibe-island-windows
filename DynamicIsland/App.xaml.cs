@@ -1,5 +1,6 @@
 using System.Windows;
 using DynamicIsland.Services;
+using DynamicIsland.UI;
 using DynamicIsland.Utils;
 using DynamicIsland.ViewModels;
 
@@ -20,10 +21,11 @@ public partial class App : System.Windows.Application
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
 
         _service = new MockClaudecodeService();
-        _viewModel = new StatusViewModel(_service);
+        var layoutSettings = (IslandLayoutSettings)Resources["IslandLayoutConfig"];
+        _viewModel = new StatusViewModel(_service, layoutSettings);
         DiagnosticsLogger.Write("Service and view model created.");
 
-        var mainWindow = new MainWindow(_viewModel);
+        var mainWindow = new MainWindow(_viewModel, layoutSettings);
         MainWindow = mainWindow;
         DiagnosticsLogger.Write("MainWindow constructed.");
         _trayIconService = new TrayIconService(ShowMainWindow, ExitApplication);
