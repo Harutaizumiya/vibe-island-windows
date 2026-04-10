@@ -16,11 +16,11 @@ public static class IslandLayout
     // Collapsed width still cooperates with StatusViewModel.GetCollapsedWidth().
     public static double CollapsedWidth => 332;
     public static double ExpandedWidth => 492;
-    public static double CollapsedHeight => 88;
+    public static double CollapsedHeight => 82;
     public static double ExpandedHeight => 188;
 
     // Header/content sizing.
-    public static double StatusRowHeight => 56;
+    public static double StatusRowHeight => 52;
     public static GridLength StatusRowGridHeight => new(StatusRowHeight);
     public static double ExpandedRegionExpandedHeight => 144;
     public static double ActionPanelMinHeight => 118;

@@ -13,9 +13,9 @@ public sealed class IslandLayoutSettings : ObservableObject
     private double _busyCollapsedWidth = 372;
     private double _attentionCollapsedWidth = 348;
     private double _expandedWidth = 492;
-    private double _collapsedHeight = 88;
+    private double _collapsedHeight = 82;
     private double _expandedHeight = 188;
-    private double _statusRowHeight = 56;
+    private double _statusRowHeight = 52;
     private double _expandedRegionExpandedHeight = 144;
     private double _actionPanelMinHeight = 118;
     private double _topMargin;

@@ -15,16 +15,16 @@
                                      BusyCollapsedWidth="372"
                                      AttentionCollapsedWidth="348"
                                      ExpandedWidth="492"
-                                     CollapsedHeight="56"
+                                     CollapsedHeight="44"
                                      ExpandedHeight="144"
                                      StatusRowHeight="40"
                                      ExpandedRegionExpandedHeight="104"
                                      ActionPanelMinHeight="82"
                                      TopMargin="0"
                                      ExpandedRegionTopSpacing="4"
-                                     CollapsedShellRadius="24"
-                                     ExpandedShellRadius="24"
-                                     BottomCornerRadius="24" />
+                                     CollapsedShellRadius="16"
+                                     ExpandedShellRadius="16"
+                                     BottomCornerRadius="16" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

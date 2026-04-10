@@ -17,6 +17,7 @@ public partial class MainWindow : Window
 {
     private const int WmDpiChanged = 0x02E0;
     private const double ExpandedBottomSafeInset = 8;
+    private const double HostWindowBottomPadding = 16;
 
     private readonly StatusViewModel _viewModel;
     private readonly IslandLayoutSettings _layoutSettings;
@@ -172,6 +173,7 @@ public partial class MainWindow : Window
 
         if (!animate)
         {
+            UpdateHostWindowHeight(targetHeight);
             MainSurface.Width = targetWidth;
             MainSurface.Height = targetHeight;
             ExpandedRegion.Height = targetExpandedRegionHeight;
@@ -184,6 +186,11 @@ public partial class MainWindow : Window
             MainSurface.CornerRadius = targetMainSurfaceCornerRadius;
             ApplyMainSurfaceClip();
             return;
+        }
+
+        if (isExpanded)
+        {
+            UpdateHostWindowHeight(targetHeight);
         }
 
         var storyboard = AnimationHelper.CreateExpandStoryboard(
@@ -206,6 +213,11 @@ public partial class MainWindow : Window
 
         storyboard.Completed += (_, _) =>
         {
+            if (!isExpanded)
+            {
+                UpdateHostWindowHeight(targetHeight);
+            }
+
             MainSurface.CornerRadius = targetMainSurfaceCornerRadius;
             ExpandedRegion.Height = targetExpandedRegionHeight;
             ApplyMainSurfaceClip();
@@ -251,6 +263,17 @@ public partial class MainWindow : Window
         {
             ExpandedRegion.Height = previousExpandedRegionHeight;
         }
+    }
+
+    private void UpdateHostWindowHeight(double mainSurfaceHeight)
+    {
+        var requiredHeight = Math.Max(
+            _layoutSettings.WindowHeight,
+            mainSurfaceHeight + MainSurface.Margin.Top + HostWindowBottomPadding);
+
+        SetCurrentValue(HeightProperty, requiredHeight);
+        SetCurrentValue(MinHeightProperty, requiredHeight);
+        SetCurrentValue(MaxHeightProperty, requiredHeight);
     }
 
     private void QueueExpandedLayoutRefresh()
