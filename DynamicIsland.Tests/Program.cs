@@ -7,6 +7,7 @@ var failures = new List<string>();
 
 Run(nameof(TaskLifecycleTransitions), TaskLifecycleTransitions);
 Run(nameof(ThinkingSuspectedAfterProcessingDelay), ThinkingSuspectedAfterProcessingDelay);
+Run(nameof(ReasoningRefreshesProcessingActivity), ReasoningRefreshesProcessingActivity);
 Run(nameof(RunningToolLongAfterToolDelay), RunningToolLongAfterToolDelay);
 Run(nameof(ThinkingSuspectedStallsAfterLongSilence), ThinkingSuspectedStallsAfterLongSilence);
 Run(nameof(RunningToolLongStallsAfterLongSilence), RunningToolLongStallsAfterLongSilence);
@@ -18,6 +19,16 @@ Run(nameof(RunningToolLongBeatsNewerProcessing), RunningToolLongBeatsNewerProces
 Run(nameof(RunningToolBeatsThinkingSuspected), RunningToolBeatsThinkingSuspected);
 Run(nameof(ActiveSessionWinsOverNewerStalledSession), ActiveSessionWinsOverNewerStalledSession);
 Run(nameof(ServiceStartsBeforeBootAnimationCompletes), ServiceStartsBeforeBootAnimationCompletes);
+Run(nameof(ExpandedContentFollowsProcessingAndToolStates), ExpandedContentFollowsProcessingAndToolStates);
+Run(nameof(FallbackExpandedMessagesStayDebugOnly), FallbackExpandedMessagesStayDebugOnly);
+Run(nameof(ShellCommandDetailsAreCapturedFromFunctionCall), ShellCommandDetailsAreCapturedFromFunctionCall);
+Run(nameof(ExpandedContentShowsChangedFilesOnlyAfterCompletion), ExpandedContentShowsChangedFilesOnlyAfterCompletion);
+Run(nameof(IdleUsesCodexIcon), IdleUsesCodexIcon);
+Run(nameof(IdleShowsCodexTitle), IdleShowsCodexTitle);
+Run(nameof(CompactStatusUsesChineseLabels), CompactStatusUsesChineseLabels);
+Run(nameof(CompletedUsesCheckGlyph), CompletedUsesCheckGlyph);
+Run(nameof(CompletedStaysVisibleForOneMinute), CompletedStaysVisibleForOneMinute);
+Run(nameof(CompletedAutoExpandsThenAutoCollapses), CompletedAutoExpandsThenAutoCollapses);
 
 if (failures.Count > 0)
 {
@@ -68,7 +79,7 @@ void TaskLifecycleTransitions()
     Expect(machine.BuildTask().Status, CodexSessionStatus.Completed, "task_complete should enter Completed");
 
     machine.AdvanceClock(startedAt.AddSeconds(11));
-    Expect(machine.BuildTask().Status, CodexSessionStatus.Idle, "completed state should cool down to Idle after 3 seconds");
+    Expect(machine.BuildTask().Status, CodexSessionStatus.Completed, "completed state should remain visible during the one-minute cooldown");
 }
 
 void ThinkingSuspectedAfterProcessingDelay()
@@ -85,6 +96,23 @@ void ThinkingSuspectedAfterProcessingDelay()
     var suspected = machine.BuildSnapshot(startedAt.AddSeconds(9));
     Expect(suspected.Task.Status, CodexSessionStatus.Processing, "thinking suspected should still map to public Processing");
     Expect(suspected.DerivedStatus, CodexCliDerivedStatus.ThinkingSuspected, "processing with no tool should become ThinkingSuspected after 8 seconds");
+}
+
+void ReasoningRefreshesProcessingActivity()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f4133f");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T03:30:00Z");
+
+    Apply(machine, EventMessage("task_started", startedAt));
+    Apply(machine, Reasoning(startedAt.AddSeconds(7), "Inspecting the latest session activity."));
+
+    var refreshed = machine.BuildSnapshot(startedAt.AddSeconds(14));
+    Expect(refreshed.Task.Status, CodexSessionStatus.Processing, "reasoning should keep the public status in Processing");
+    Expect(refreshed.DerivedStatus, CodexCliDerivedStatus.Processing, "reasoning should refresh activity and avoid early ThinkingSuspected");
+    Expect(refreshed.Task.UpdatedAt, startedAt.AddSeconds(7), "reasoning should refresh UpdatedAt so the island can follow progress");
+
+    var suspectedLater = machine.BuildSnapshot(startedAt.AddSeconds(16));
+    Expect(suspectedLater.DerivedStatus, CodexCliDerivedStatus.ThinkingSuspected, "reasoning should still age into ThinkingSuspected after the threshold");
 }
 
 void RunningToolLongAfterToolDelay()
@@ -110,8 +138,8 @@ void ThinkingSuspectedStallsAfterLongSilence()
     var startedAt = DateTimeOffset.Parse("2026-04-09T04:10:00Z");
 
     Apply(machine, EventMessage("task_started", startedAt));
-    var stalled = machine.BuildSnapshot(startedAt.AddSeconds(61));
-    Expect(stalled.Task.Status, CodexSessionStatus.Stalled, "thinking suspected should eventually stall after 1 minute");
+    var stalled = machine.BuildSnapshot(startedAt.AddSeconds(181));
+    Expect(stalled.Task.Status, CodexSessionStatus.Stalled, "thinking suspected should eventually stall after 3 minutes");
     Expect(stalled.DerivedStatus, CodexCliDerivedStatus.Stalled, "thinking suspected should transition to stalled internally");
 }
 
@@ -122,8 +150,8 @@ void RunningToolLongStallsAfterLongSilence()
 
     Apply(machine, EventMessage("task_started", startedAt));
     Apply(machine, FunctionCall("shell_command", startedAt.AddSeconds(1)));
-    var stalled = machine.BuildSnapshot(startedAt.AddSeconds(62));
-    Expect(stalled.Task.Status, CodexSessionStatus.Stalled, "long-running tool should stall after 1 minute without events");
+    var stalled = machine.BuildSnapshot(startedAt.AddSeconds(182));
+    Expect(stalled.Task.Status, CodexSessionStatus.Stalled, "long-running tool should stall after 3 minutes without events");
     Expect(stalled.DerivedStatus, CodexCliDerivedStatus.Stalled, "running tool long should transition to stalled internally");
 }
 
@@ -293,6 +321,280 @@ void ServiceStartsBeforeBootAnimationCompletes()
     viewModel.Dispose();
 }
 
+void ExpandedContentFollowsProcessingAndToolStates()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Processing,
+        "Session",
+        "Streaming commentary from the agent.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:00:00Z"),
+        "session-1"));
+
+    Expect(viewModel.ExpandedSectionTitle, "AGENT OUTPUT", "processing should show the agent output section");
+    Expect(viewModel.ExpandedDetailText, "Streaming commentary from the agent.", "processing should show the latest agent output");
+    Expect(viewModel.IsExpandedTextVisible, true, "processing should show text details");
+    Expect(viewModel.IsChangedFilesVisible, false, "processing should not show changed files");
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.RunningTool,
+        "Session",
+        "Running shell_command.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:00:10Z"),
+        "session-1",
+        DebugSource: "Derived: RunningTool\nPublic: RunningTool\nEvent: tool_started\nTool: shell_command\nCommand: dotnet build DynamicIsland/DynamicIsland.csproj -c Release\nEventTime: 2026-04-09T06:00:10.0000000+00:00"));
+
+    Expect(viewModel.ExpandedSectionTitle, "TOOL DETAILS", "running tool should show tool details");
+    Expect(viewModel.ExpandedDetailText.Contains("Running shell_command.", StringComparison.Ordinal), true, "tool details should include the tool message");
+    Expect(viewModel.ExpandedDetailText.Contains("Tool: shell_command", StringComparison.Ordinal), true, "tool details should include the tool name");
+    Expect(viewModel.ExpandedDetailText.Contains("Command: dotnet build DynamicIsland/DynamicIsland.csproj -c Release", StringComparison.Ordinal), true, "tool details should include the command");
+    Expect(viewModel.IsExpandedTextVisible, true, "running tool should keep text details visible");
+    Expect(viewModel.IsChangedFilesVisible, false, "running tool should not show changed files");
+
+    viewModel.Dispose();
+}
+
+void FallbackExpandedMessagesStayDebugOnly()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Processing,
+        "Session",
+        "Codex is reasoning about the current turn.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:00:05Z"),
+        "session-fallback"));
+
+    Expect(viewModel.ExpandedDetailText, string.Empty, "fallback reasoning text should be hidden outside debug mode");
+    Expect(viewModel.IsExpandedTextVisible, false, "fallback reasoning text should not keep the expanded text panel visible");
+
+    viewModel.Dispose();
+}
+
+void ShellCommandDetailsAreCapturedFromFunctionCall()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f41341");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T06:05:00Z");
+
+    Apply(machine, JsonSerializer.Serialize(new
+    {
+        timestamp = startedAt,
+        type = "response_item",
+        payload = new
+        {
+            type = "function_call",
+            name = "shell_command",
+            arguments = "{\"command\":\"dotnet test DynamicIsland.Tests/DynamicIsland.Tests.csproj -c Release\",\"workdir\":\"C:\\\\Users\\\\Haruta\\\\Documents\\\\code\\\\APP\\\\vibe-island-windows\"}"
+        }
+    }));
+
+    var task = machine.BuildTask();
+    Expect(task.Status, CodexSessionStatus.RunningTool, "shell command call should enter RunningTool");
+    Expect(task.DebugSource?.Contains("Command: dotnet test DynamicIsland.Tests/DynamicIsland.Tests.csproj -c Release", StringComparison.Ordinal) ?? false, true, "debug source should include the parsed shell command");
+}
+
+void ExpandedContentShowsChangedFilesOnlyAfterCompletion()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.RunningTool,
+        "Session",
+        "Running apply_patch.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:10:00Z"),
+        "session-2",
+        ChangedFiles: new[]
+        {
+            @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\MainWindow.xaml"
+        }));
+
+    Expect(viewModel.IsChangedFilesVisible, false, "changed files should stay hidden before completion");
+    Expect(viewModel.ChangedFiles.Count, 0, "changed files list should remain empty before completion");
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Completed,
+        "Session",
+        "Completed turn.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:10:20Z"),
+        "session-2",
+        ChangedFiles: new[]
+        {
+            @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\MainWindow.xaml",
+            @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\ViewModels\StatusViewModel.cs"
+        }));
+
+    Expect(viewModel.ExpandedSectionTitle, "CHANGED FILES", "completed turns should switch to changed files");
+    Expect(viewModel.IsChangedFilesVisible, true, "completed turns should show changed files");
+    Expect(viewModel.IsExpandedTextVisible, false, "completed turns with changed files should hide the text panel");
+    Expect(viewModel.ChangedFiles.Count, 2, "completed turns should expose tracked changed files");
+
+    viewModel.Dispose();
+}
+
+void IdleUsesCodexIcon()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Idle,
+        "Codex CLI",
+        "Waiting for an active Codex CLI session.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:20:00Z"),
+        "session-idle"));
+
+    Expect(viewModel.IsIdleCodexIconVisible, true, "idle state should show the Codex icon");
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Processing,
+        "Session",
+        "Agent is processing.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:20:05Z"),
+        "session-idle"));
+
+    Expect(viewModel.IsIdleCodexIconVisible, false, "non-idle states should hide the Codex icon");
+
+    viewModel.Dispose();
+}
+
+void IdleShowsCodexTitle()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Idle,
+        "Codex CLI",
+        "Waiting for an active Codex CLI session.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:25:00Z"),
+        "session-idle"));
+
+    Expect(viewModel.StatusText, "Codex", "idle state should display Codex instead of Codex CLI");
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Processing,
+        "Mock Session",
+        "Agent is processing.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:25:05Z"),
+        "session-idle"));
+
+    Expect(viewModel.StatusText, "Mock Session", "non-idle states should keep their original title");
+
+    viewModel.Dispose();
+}
+
+void CompactStatusUsesChineseLabels()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Idle,
+        "Codex CLI",
+        "Waiting for an active Codex CLI session.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:27:00Z"),
+        "session-idle"));
+    Expect(viewModel.CompactStatusText, "空闲", "idle state should use the Chinese compact label");
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Processing,
+        "Mock Session",
+        "Agent is processing.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:27:05Z"),
+        "session-processing"));
+    Expect(viewModel.CompactStatusText, "思考中", "processing state should use the Chinese compact label");
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.RunningTool,
+        "Mock Session",
+        "Running shell_command.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:27:10Z"),
+        "session-tool"));
+    Expect(viewModel.CompactStatusText, "调用工具", "running tool should use the Chinese compact label");
+
+    viewModel.Dispose();
+}
+
+void CompletedUsesCheckGlyph()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Completed,
+        "Session",
+        "Completed turn.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:28:00Z"),
+        "session-completed"));
+
+    Expect(viewModel.StatusGlyph, "√", "completed state should use the check glyph");
+
+    viewModel.Dispose();
+}
+
+void CompletedStaysVisibleForOneMinute()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f41340");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T06:30:00Z");
+
+    Apply(machine, EventMessage("task_started", startedAt));
+    Apply(machine, TaskComplete(startedAt.AddSeconds(5)));
+
+    machine.AdvanceClock(startedAt.AddSeconds(64));
+    Expect(machine.BuildTask().Status, CodexSessionStatus.Completed, "completed state should still be visible before one minute elapses");
+
+    machine.AdvanceClock(startedAt.AddSeconds(66));
+    Expect(machine.BuildTask().Status, CodexSessionStatus.Idle, "completed state should cool down to Idle after one minute");
+}
+
+void CompletedAutoExpandsThenAutoCollapses()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    service.Publish(new CodexTask(
+        CodexSessionStatus.Completed,
+        "Session",
+        "Completed turn.",
+        Array.Empty<string>(),
+        DateTimeOffset.Parse("2026-04-09T06:40:00Z"),
+        "session-completed",
+        ChangedFiles: new[]
+        {
+            @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\MainWindow.xaml"
+        }));
+
+    Expect(viewModel.IsExpanded, true, "completed state should trigger one automatic expansion");
+
+    var method = typeof(StatusViewModel).GetMethod("OnCompletedAutoCollapseTimerTick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+    if (method is null)
+    {
+        throw new InvalidOperationException("Expected completed auto-collapse handler to exist.");
+    }
+
+    method.Invoke(viewModel, [null, EventArgs.Empty]);
+    Expect(viewModel.IsExpanded, false, "completed state should auto-collapse after the timer fires");
+
+    viewModel.Dispose();
+}
+
 static void Apply(CodexCliSessionStateMachine machine, string jsonLine)
 {
     if (!machine.TryApplyLine(jsonLine, out var error))
@@ -382,6 +684,26 @@ static string ResponseMessage(string phase, string text, DateTimeOffset timestam
                 {
                     type = "output_text",
                     text
+                }
+            }
+        }
+    });
+}
+
+static string Reasoning(DateTimeOffset timestamp, string summary)
+{
+    return JsonSerializer.Serialize(new
+    {
+        timestamp,
+        type = "response_item",
+        payload = new
+        {
+            type = "reasoning",
+            summary = new[]
+            {
+                new
+                {
+                    text = summary
                 }
             }
         }
@@ -507,6 +829,38 @@ sealed class ProbeStatusService : ICodexStatusService
     public Task ExecuteActionAsync(string actionId, CancellationToken cancellationToken = default)
     {
         return Task.CompletedTask;
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
+sealed class ControllableStatusService : ICodexStatusService
+{
+    public event EventHandler<CodexTask>? TaskUpdated;
+
+    public CodexTask? CurrentTask { get; private set; }
+
+    public Task StartAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.CompletedTask;
+    }
+
+    public Task ExecuteActionAsync(string actionId, CancellationToken cancellationToken = default)
+    {
+        return Task.CompletedTask;
+    }
+
+    public void Publish(CodexTask task)
+    {
+        CurrentTask = task;
+        TaskUpdated?.Invoke(this, task);
     }
 
     public void Dispose()

@@ -34,12 +34,13 @@ public sealed class MockCodexStatusService : ICodexStatusService
 
         _started = true;
         Publish(CreateTask(
-            CodexSessionStatus.Processing,
+            CodexSessionStatus.Idle,
             "Mock Session",
-            "Codex CLI is processing a demo turn.",
-            EmptyActions));
+            "Mock feed ready. Waiting to start a demo turn.",
+            EmptyActions,
+            debugSource: "Source: Mock feed\nStage: idle"));
 
-        Schedule(DemoStage.RunningTool, seconds: 4);
+        Schedule(DemoStage.RestartingWork, seconds: 2);
         return Task.CompletedTask;
     }
 
@@ -58,7 +59,8 @@ public sealed class MockCodexStatusService : ICodexStatusService
                 CodexSessionStatus.Processing,
                 "Mock Session",
                 "Resuming the demo turn after an interruption.",
-                EmptyActions));
+                EmptyActions,
+                debugSource: "Source: Mock feed\nStage: resume"));
             Schedule(DemoStage.RunningTool, seconds: 3);
         }
         else if (string.Equals(actionId, "Reset Demo", StringComparison.OrdinalIgnoreCase))
@@ -67,7 +69,8 @@ public sealed class MockCodexStatusService : ICodexStatusService
                 CodexSessionStatus.Idle,
                 "Codex CLI",
                 "The demo feed was reset. Waiting to start again.",
-                EmptyActions));
+                EmptyActions,
+                debugSource: "Source: Mock feed\nStage: reset"));
             Schedule(DemoStage.RestartingWork, seconds: 4);
         }
 
@@ -90,8 +93,9 @@ public sealed class MockCodexStatusService : ICodexStatusService
                 Publish(CreateTask(
                     CodexSessionStatus.RunningTool,
                     "Mock Session",
-                    "Running a demo tool call.",
-                    EmptyActions));
+                    "Running shell_command.",
+                    EmptyActions,
+                    debugSource: $"Source: Mock feed\nStage: running_tool\nTool: shell_command\nEventTime: {DateTimeOffset.UtcNow:O}"));
                 Schedule(DemoStage.Finishing, seconds: 4);
                 break;
 
@@ -100,7 +104,8 @@ public sealed class MockCodexStatusService : ICodexStatusService
                     CodexSessionStatus.Finishing,
                     "Mock Session",
                     "Preparing a demo final answer.",
-                    EmptyActions));
+                    EmptyActions,
+                    debugSource: "Source: Mock feed\nStage: finishing"));
                 Schedule(DemoStage.Completed, seconds: 3);
                 break;
 
@@ -109,7 +114,13 @@ public sealed class MockCodexStatusService : ICodexStatusService
                     CodexSessionStatus.Completed,
                     "Mock Session",
                     "The demo turn completed successfully.",
-                    EmptyActions));
+                    EmptyActions,
+                    changedFiles:
+                    [
+                        @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\MainWindow.xaml",
+                        @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\ViewModels\StatusViewModel.cs"
+                    ],
+                    debugSource: "Source: Mock feed\nStage: completed"));
                 Schedule(DemoStage.Interrupted, seconds: 3);
                 break;
 
@@ -118,7 +129,8 @@ public sealed class MockCodexStatusService : ICodexStatusService
                     CodexSessionStatus.Interrupted,
                     "Mock Session",
                     "A later demo turn was interrupted.",
-                    InterruptedActions));
+                    InterruptedActions,
+                    debugSource: "Source: Mock feed\nStage: interrupted"));
                 _stage = DemoStage.Interrupted;
                 break;
 
@@ -127,7 +139,8 @@ public sealed class MockCodexStatusService : ICodexStatusService
                     CodexSessionStatus.Processing,
                     "Mock Session",
                     "Codex CLI is processing a fresh demo turn.",
-                    EmptyActions));
+                    EmptyActions,
+                    debugSource: "Source: Mock feed\nStage: processing"));
                 Schedule(DemoStage.RunningTool, seconds: 4);
                 break;
         }
@@ -150,9 +163,11 @@ public sealed class MockCodexStatusService : ICodexStatusService
         CodexSessionStatus status,
         string title,
         string message,
-        IReadOnlyList<string> actions)
+        IReadOnlyList<string> actions,
+        IReadOnlyList<string>? changedFiles = null,
+        string? debugSource = null)
     {
-        return new CodexTask(status, title, message, actions, DateTimeOffset.Now, SessionId: "mock");
+        return new CodexTask(status, title, message, actions, DateTimeOffset.Now, SessionId: "mock", ChangedFiles: changedFiles, DebugSource: debugSource);
     }
 
     private enum DemoStage

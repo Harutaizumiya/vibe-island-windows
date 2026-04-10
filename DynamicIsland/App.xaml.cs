@@ -47,7 +47,8 @@ public partial class App : System.Windows.Application
 
     private static ICodexStatusService CreateStatusService()
     {
-        var mode = Environment.GetEnvironmentVariable("DYNAMIC_ISLAND_SERVICE_MODE");
+        var mode = AppRuntimeOptions.ResolveServiceMode();
+        DiagnosticsLogger.Write($"Configured service mode: {mode}");
         if (string.Equals(mode, "mock", StringComparison.OrdinalIgnoreCase))
         {
             DiagnosticsLogger.Write("Using mock Codex status service.");

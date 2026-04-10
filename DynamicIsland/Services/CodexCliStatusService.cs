@@ -13,6 +13,7 @@ public sealed class CodexCliStatusService : ICodexStatusService
     private static readonly Regex SessionIdRegex = new(@"(?<id>[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly TimeSpan ActiveSessionWindow = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan ActivePollInterval = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan SessionDiscoveryInterval = TimeSpan.FromSeconds(3);
 
     private readonly object _gate = new();
     private readonly Dictionary<string, SessionTracker> _trackers = new(StringComparer.OrdinalIgnoreCase);
@@ -28,6 +29,7 @@ public sealed class CodexCliStatusService : ICodexStatusService
     private bool _started;
     private bool _watchersHealthy = true;
     private string _lastCandidateSummary = string.Empty;
+    private DateTimeOffset _lastSessionDiscoveryAt = DateTimeOffset.MinValue;
 
     public CodexCliStatusService()
     {
@@ -61,6 +63,7 @@ public sealed class CodexCliStatusService : ICodexStatusService
         LoadSessionIndex();
         InitializeWatchers();
         DiscoverSessionFiles();
+        _lastSessionDiscoveryAt = DateTimeOffset.UtcNow;
         _clockTimer.Start();
         _activePollTimer.Start();
         PublishCurrentTask();
@@ -365,12 +368,57 @@ public sealed class CodexCliStatusService : ICodexStatusService
 
     private void OnClockTick(object? sender, EventArgs e)
     {
+        TryDiscoverRecentSessionFiles();
+
         foreach (var tracker in _trackers.Values)
         {
             tracker.StateMachine.AdvanceClock(DateTimeOffset.UtcNow);
         }
 
         PublishCurrentTask();
+    }
+
+    private void TryDiscoverRecentSessionFiles()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastSessionDiscoveryAt < SessionDiscoveryInterval)
+        {
+            return;
+        }
+
+        _lastSessionDiscoveryAt = now;
+
+        if (!Directory.Exists(_sessionsRoot))
+        {
+            return;
+        }
+
+        var discoveredCount = 0;
+        foreach (var path in EnumerateBootstrapSessionFiles())
+        {
+            var sessionId = TryParseSessionId(path);
+            if (sessionId is null)
+            {
+                continue;
+            }
+
+            lock (_gate)
+            {
+                if (_trackers.ContainsKey(sessionId))
+                {
+                    continue;
+                }
+            }
+
+            DiagnosticsLogger.Write($"Periodic session discovery picked up session file: {path}");
+            EnsureTracker(path, readFromStart: true);
+            discoveredCount++;
+        }
+
+        if (discoveredCount > 0)
+        {
+            DiagnosticsLogger.Write($"Periodic session discovery added {discoveredCount} tracker(s).");
+        }
     }
 
     private void OnActivePollTick(object? sender, EventArgs e)
@@ -413,20 +461,25 @@ public sealed class CodexCliStatusService : ICodexStatusService
                 "Codex CLI",
                 "The Codex CLI file watcher failed. Restart the island to recover live updates.",
                 Array.Empty<string>(),
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow,
+                DebugSource: "Source: FileSystemWatcher error");
         }
 
         var now = DateTimeOffset.UtcNow;
         var candidates = _trackers.Values
-            .Select(tracker => tracker.StateMachine.BuildSnapshot(now))
-            .Where(snapshot => snapshot.Task.Status != CodexSessionStatus.Idle && now - snapshot.Task.UpdatedAt <= ActiveSessionWindow)
+            .Select(tracker => new
+            {
+                Tracker = tracker,
+                Snapshot = tracker.StateMachine.BuildSnapshot(now)
+            })
+            .Where(entry => entry.Snapshot.Task.Status != CodexSessionStatus.Idle && now - entry.Snapshot.Task.UpdatedAt <= ActiveSessionWindow)
             .ToList();
 
         if (candidates.Count > 0)
         {
             var summary = string.Join(
                 " | ",
-                candidates.Take(5).Select(snapshot => $"{snapshot.Task.SessionId}:{snapshot.DerivedStatus}@{snapshot.Task.UpdatedAt:HH:mm:ss.fff}"));
+                candidates.Take(5).Select(entry => $"{entry.Snapshot.Task.SessionId}:{entry.Snapshot.DerivedStatus}@{entry.Snapshot.Task.UpdatedAt:HH:mm:ss.fff}"));
             if (!string.Equals(_lastCandidateSummary, summary, StringComparison.Ordinal))
             {
                 _lastCandidateSummary = summary;
@@ -445,24 +498,25 @@ public sealed class CodexCliStatusService : ICodexStatusService
                 "Codex CLI",
                 "Waiting for an active Codex CLI session.",
                 Array.Empty<string>(),
-                now);
+                now,
+                DebugSource: $"Source root: {_sessionsRoot}");
         }
 
         var activeCandidates = candidates
-            .Where(snapshot => IsActiveStatus(snapshot.DerivedStatus))
-            .OrderBy(snapshot => GetActivePriority(snapshot.DerivedStatus))
-            .ThenByDescending(snapshot => snapshot.Task.UpdatedAt)
+            .Where(entry => IsActiveStatus(entry.Snapshot.DerivedStatus))
+            .OrderBy(entry => GetActivePriority(entry.Snapshot.DerivedStatus))
+            .ThenByDescending(entry => entry.Snapshot.Task.UpdatedAt)
             .ToList();
 
         if (activeCandidates.Count > 0)
         {
-            return activeCandidates[0].Task;
+            return AttachDebugSource(activeCandidates[0].Tracker, activeCandidates[0].Snapshot.Task);
         }
 
         return candidates
-            .OrderByDescending(snapshot => snapshot.Task.UpdatedAt)
-            .ThenBy(snapshot => GetPriority(snapshot.DerivedStatus))
-            .Select(snapshot => snapshot.Task)
+            .OrderByDescending(entry => entry.Snapshot.Task.UpdatedAt)
+            .ThenBy(entry => GetPriority(entry.Snapshot.DerivedStatus))
+            .Select(entry => AttachDebugSource(entry.Tracker, entry.Snapshot.Task))
             .First();
     }
 
@@ -535,7 +589,18 @@ public sealed class CodexCliStatusService : ICodexStatusService
             && left.Message == right.Message
             && left.SessionId == right.SessionId
             && left.AvailableActions.SequenceEqual(right.AvailableActions)
-            && (left.ChangedFiles ?? Array.Empty<string>()).SequenceEqual(right.ChangedFiles ?? Array.Empty<string>());
+            && (left.ChangedFiles ?? Array.Empty<string>()).SequenceEqual(right.ChangedFiles ?? Array.Empty<string>())
+            && left.DebugSource == right.DebugSource;
+    }
+
+    private static CodexTask AttachDebugSource(SessionTracker tracker, CodexTask task)
+    {
+        var path = tracker.FilePath;
+        var debugSource = string.IsNullOrWhiteSpace(task.DebugSource)
+            ? $"File: {path}"
+            : $"{task.DebugSource}{Environment.NewLine}File: {path}";
+
+        return task with { DebugSource = debugSource };
     }
 
     private static string? TryParseSessionId(string path)

@@ -5,8 +5,8 @@ namespace DynamicIsland.UI;
 public static class IslandLayout
 {
     // Fixed transparent host window size in MainWindow.xaml.
-    public static double WindowWidth => 520;
-    public static double WindowHeight => 300;
+    public static double WindowWidth => 540;
+    public static double WindowHeight => 320;
 
     // Host window distance from the top edge of the usable screen.
     // MainWindow.xaml.cs passes this into WindowPositionHelper.PositionTopCenter().

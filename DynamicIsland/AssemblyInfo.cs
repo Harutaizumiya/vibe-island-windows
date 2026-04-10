@@ -10,3 +10,4 @@ using System.Runtime.CompilerServices;
                                                 // app, or any theme specific resource dictionaries)
 )]
 [assembly: InternalsVisibleTo("DynamicIsland.Tests")]
+[assembly: InternalsVisibleTo("DynamicIsland.Logger")]

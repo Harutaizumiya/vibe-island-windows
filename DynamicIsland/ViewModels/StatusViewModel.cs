@@ -8,10 +8,25 @@ namespace DynamicIsland.ViewModels;
 
 public sealed class StatusViewModel : ObservableObject, IDisposable
 {
+    private static readonly HashSet<string> DebugOnlyExpandedMessages = new(StringComparer.Ordinal)
+    {
+        "Codex is reasoning about the current turn.",
+        "Codex is processing the current turn.",
+        "Codex CLI is processing the current turn.",
+        "Codex CLI is preparing the final answer.",
+        "Running a Codex CLI tool.",
+        "No new events; task may be stalled.",
+        "The current turn was interrupted.",
+        "The live watcher could not determine the current session state.",
+        "Waiting for an active Codex CLI session."
+    };
+
     private readonly ICodexStatusService _service;
     private readonly IslandLayoutSettings _layoutSettings;
     private readonly DispatcherTimer _glyphTimer;
     private readonly DispatcherTimer _approvalFeedbackTimer;
+    private readonly DispatcherTimer _completedAutoCollapseTimer;
+    private readonly bool _isDebugMode;
     private readonly string[] _workingGlyphFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private const string ApprovalGlyph = "✓";
 
@@ -19,6 +34,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private string _statusText = "Booting";
     private string _statusMessage = "Preparing the island services.";
     private string _compactStatusMessage = "Preparing the island services.";
+    private string _compactStatusText = "启动中";
     private string _statusGlyph = "o";
     private string _activityBadgeText = "BOOT";
     private bool _isExpanded;
@@ -33,16 +49,21 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private string _tertiaryActionText = string.Empty;
     private string _panelHintText = "Waiting for the next actionable state.";
     private IReadOnlyList<string> _changedFiles = Array.Empty<string>();
+    private string _expandedSectionTitle = "STATUS DETAILS";
+    private string _expandedDetailText = "Waiting for the next actionable state.";
     private bool _isPrimaryActionVisible;
     private bool _isSecondaryActionVisible;
     private bool _isTertiaryActionVisible;
     private bool _isApprovalFeedbackVisible;
     private int _glyphFrameIndex;
+    private string _debugStatusText = "Idle";
+    private string _debugSourceText = "Debug mode disabled.";
 
     public StatusViewModel(ICodexStatusService service, IslandLayoutSettings layoutSettings)
     {
         _service = service;
         _layoutSettings = layoutSettings;
+        _isDebugMode = AppRuntimeOptions.ResolveDebugMode();
         _service.TaskUpdated += OnTaskUpdated;
         _layoutSettings.PropertyChanged += OnLayoutSettingsPropertyChanged;
         _glyphTimer = new DispatcherTimer(DispatcherPriority.Background)
@@ -55,6 +76,11 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
             Interval = TimeSpan.FromMilliseconds(1600)
         };
         _approvalFeedbackTimer.Tick += OnApprovalFeedbackTimerTick;
+        _completedAutoCollapseTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(10)
+        };
+        _completedAutoCollapseTimer.Tick += OnCompletedAutoCollapseTimerTick;
         _collapsedWidth = _layoutSettings.GetCollapsedWidth(_currentStatus);
 
         ToggleExpandCommand = new RelayCommand(ToggleExpand);
@@ -63,10 +89,20 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         TertiaryActionCommand = new AsyncRelayCommand(ExecuteTertiaryActionAsync, () => IsTertiaryActionVisible);
     }
 
+    public bool IsDebugMode => _isDebugMode;
+
+    public bool IsIdleCodexIconVisible => CurrentStatus == CodexSessionStatus.Idle && !IsApprovalFeedbackVisible;
+
     public CodexSessionStatus CurrentStatus
     {
         get => _currentStatus;
-        private set => SetProperty(ref _currentStatus, value);
+        private set
+        {
+            if (SetProperty(ref _currentStatus, value))
+            {
+                OnPropertyChanged(nameof(IsIdleCodexIconVisible));
+            }
+        }
     }
 
     public string StatusText
@@ -85,6 +121,12 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     {
         get => _compactStatusMessage;
         private set => SetProperty(ref _compactStatusMessage, value);
+    }
+
+    public string CompactStatusText
+    {
+        get => _compactStatusText;
+        private set => SetProperty(ref _compactStatusText, value);
     }
 
     public string StatusGlyph
@@ -171,6 +213,18 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _changedFiles, value);
     }
 
+    public string ExpandedSectionTitle
+    {
+        get => _expandedSectionTitle;
+        private set => SetProperty(ref _expandedSectionTitle, value);
+    }
+
+    public string ExpandedDetailText
+    {
+        get => _expandedDetailText;
+        private set => SetProperty(ref _expandedDetailText, value);
+    }
+
     public bool IsPrimaryActionVisible
     {
         get => _isPrimaryActionVisible;
@@ -192,7 +246,25 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     public bool IsApprovalFeedbackVisible
     {
         get => _isApprovalFeedbackVisible;
-        private set => SetProperty(ref _isApprovalFeedbackVisible, value);
+        private set
+        {
+            if (SetProperty(ref _isApprovalFeedbackVisible, value))
+            {
+                OnPropertyChanged(nameof(IsIdleCodexIconVisible));
+            }
+        }
+    }
+
+    public string DebugStatusText
+    {
+        get => _debugStatusText;
+        private set => SetProperty(ref _debugStatusText, value);
+    }
+
+    public string DebugSourceText
+    {
+        get => _debugSourceText;
+        private set => SetProperty(ref _debugSourceText, value);
     }
 
     public string ExpansionHint => IsExpanded
@@ -200,6 +272,20 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         : IsActionRequired
             ? "ACTION"
             : "TAP / HOVER";
+
+    public bool IsIdleExpandedState => CurrentStatus == CodexSessionStatus.Idle;
+
+    public bool IsDetailPanelVisible => !IsIdleExpandedState;
+
+    public bool IsExpandedTextVisible => !IsIdleExpandedState
+        && !string.IsNullOrWhiteSpace(ExpandedDetailText)
+        && (CurrentStatus != CodexSessionStatus.Completed || ChangedFiles.Count == 0);
+
+    public bool IsChangedFilesVisible => CurrentStatus == CodexSessionStatus.Completed && ChangedFiles.Count > 0;
+
+    public double ExpandedPanelMinHeight => 0;
+
+    public double ExpandedRegionBaseHeight => 0;
 
     public RelayCommand ToggleExpandCommand { get; }
 
@@ -256,8 +342,10 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         _layoutSettings.PropertyChanged -= OnLayoutSettingsPropertyChanged;
         _glyphTimer.Tick -= OnGlyphTimerTick;
         _approvalFeedbackTimer.Tick -= OnApprovalFeedbackTimerTick;
+        _completedAutoCollapseTimer.Tick -= OnCompletedAutoCollapseTimerTick;
         _glyphTimer.Stop();
         _approvalFeedbackTimer.Stop();
+        _completedAutoCollapseTimer.Stop();
     }
 
     private async Task ExecutePrimaryActionAsync()
@@ -314,12 +402,20 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private void ApplyTask(CodexTask task)
     {
         ClearApprovalFeedback();
+        var previousStatus = CurrentStatus;
         DiagnosticsLogger.Write($"Task update: status={task.Status}, title={task.Title}, actions={task.AvailableActions.Count}");
         CurrentStatus = task.Status;
-        StatusText = task.Title;
+        StatusText = BuildDisplayTitle(task);
         StatusMessage = task.Message;
         CompactStatusMessage = BuildCompactStatusMessage(task);
+        CompactStatusText = BuildCompactStatusText(task.Status);
+        DebugStatusText = task.Status.ToString();
+        DebugSourceText = string.IsNullOrWhiteSpace(task.DebugSource)
+            ? "No source details available."
+            : task.DebugSource;
         ChangedFiles = BuildChangedFiles(task);
+        ExpandedSectionTitle = BuildExpandedSectionTitle(task);
+        ExpandedDetailText = FilterExpandedDetailText(BuildExpandedDetailText(task));
         IsBusy = task.Status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing;
         IsActionRequired = task.AvailableActions.Count > 0;
 
@@ -334,20 +430,27 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         PanelHintText = BuildPanelHint(task);
         ActivityBadgeText = BuildActivityBadge(task.Status);
 
-        if (IsActionRequired)
+        if (task.Status == CodexSessionStatus.Completed)
         {
+            ShowCompletedState(previousStatus);
+        }
+        else if (IsActionRequired)
+        {
+            _completedAutoCollapseTimer.Stop();
             _isHoverExpanded = false;
             IsExpanded = true;
             _ = TriggerBounceAsync();
         }
         else if (!_isManualExpanded)
         {
+            _completedAutoCollapseTimer.Stop();
             _isHoverExpanded = false;
             IsExpanded = false;
         }
 
         CollapsedWidth = _layoutSettings.GetCollapsedWidth(task.Status);
         UpdateStaticGlyph(task.Status);
+        RaiseExpandedPanelStateChanged();
 
         RefreshCommands();
     }
@@ -365,7 +468,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     private string BuildPanelHint(CodexTask task)
     {
-        if ((task.ChangedFiles?.Count ?? 0) > 0)
+        if (task.Status == CodexSessionStatus.Completed && (task.ChangedFiles?.Count ?? 0) > 0)
         {
             return "The island is showing the latest files changed in this Codex session.";
         }
@@ -375,8 +478,8 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
             CodexSessionStatus.Processing => "Codex CLI is still thinking. The island will keep following the current turn.",
             CodexSessionStatus.RunningTool => "A tool call is in flight. If it keeps running, the island will continue following it.",
             CodexSessionStatus.Finishing => "Codex CLI is preparing the final answer for the current turn.",
-            CodexSessionStatus.Completed => "This turn completed. The island will fall back to idle after a short cooldown.",
-            CodexSessionStatus.Stalled => "No meaningful session progress arrived for about a minute; the task may be stalled.",
+            CodexSessionStatus.Completed => "This turn completed. The island will stay visible for about one minute before returning to idle.",
+            CodexSessionStatus.Stalled => "No meaningful session progress arrived for about three minutes; the task may be stalled.",
             CodexSessionStatus.Interrupted => "The current turn was interrupted or rolled back before completion.",
             CodexSessionStatus.Unknown => "The live watcher could not determine the current session state.",
             _ => "No action is required right now. Tap the island to inspect the latest status message."
@@ -385,7 +488,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     private static IReadOnlyList<string> BuildChangedFiles(CodexTask task)
     {
-        if (task.ChangedFiles is null || task.ChangedFiles.Count == 0)
+        if (task.Status != CodexSessionStatus.Completed || task.ChangedFiles is null || task.ChangedFiles.Count == 0)
         {
             return Array.Empty<string>();
         }
@@ -412,6 +515,91 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         return normalized;
     }
 
+    private static string BuildExpandedSectionTitle(CodexTask task)
+    {
+        return task.Status switch
+        {
+            CodexSessionStatus.Processing => "AGENT OUTPUT",
+            CodexSessionStatus.RunningTool => "TOOL DETAILS",
+            CodexSessionStatus.Finishing => "AGENT OUTPUT",
+            CodexSessionStatus.Completed => "CHANGED FILES",
+            _ => "STATUS DETAILS"
+        };
+    }
+
+    private static string BuildExpandedDetailText(CodexTask task)
+    {
+        return task.Status switch
+        {
+            CodexSessionStatus.Processing => NormalizeExpandedDetail(task.Message, "Codex is processing the current turn."),
+            CodexSessionStatus.RunningTool => BuildToolDetailText(task),
+            CodexSessionStatus.Finishing => NormalizeExpandedDetail(task.Message, "Codex is preparing the final answer."),
+            CodexSessionStatus.Completed => (task.ChangedFiles?.Count ?? 0) > 0
+                ? "The island is showing the files changed in the completed turn."
+                : "This turn completed without any tracked file changes.",
+            CodexSessionStatus.Stalled => NormalizeExpandedDetail(task.Message, "No new events; task may be stalled."),
+            CodexSessionStatus.Interrupted => NormalizeExpandedDetail(task.Message, "The current turn was interrupted."),
+            CodexSessionStatus.Unknown => NormalizeExpandedDetail(task.Message, "The live watcher could not determine the current session state."),
+            _ => NormalizeExpandedDetail(task.Message, "Waiting for an active Codex CLI session.")
+        };
+    }
+
+    private string FilterExpandedDetailText(string detailText)
+    {
+        if (IsDebugMode || string.IsNullOrWhiteSpace(detailText))
+        {
+            return detailText;
+        }
+
+        return DebugOnlyExpandedMessages.Contains(detailText)
+            ? string.Empty
+            : detailText;
+    }
+
+    private static string BuildToolDetailText(CodexTask task)
+    {
+        var details = new List<string>
+        {
+            NormalizeExpandedDetail(task.Message, "Running a Codex CLI tool.")
+        };
+
+        AppendDebugLine(details, task.DebugSource, "Tool:");
+        AppendDebugLine(details, task.DebugSource, "Command:");
+        AppendDebugLine(details, task.DebugSource, "EventTime:");
+        return string.Join(Environment.NewLine, details.Distinct(StringComparer.Ordinal));
+    }
+
+    private static void AppendDebugLine(List<string> details, string? debugSource, string prefix)
+    {
+        if (string.IsNullOrWhiteSpace(debugSource))
+        {
+            return;
+        }
+
+        var line = debugSource
+            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault(item => item.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(line))
+        {
+            details.Add(line);
+        }
+    }
+
+    private static string NormalizeExpandedDetail(string? message, string fallback)
+    {
+        return string.IsNullOrWhiteSpace(message) ? fallback : message.Trim();
+    }
+
+    private static string BuildDisplayTitle(CodexTask task)
+    {
+        if (task.Status == CodexSessionStatus.Idle)
+        {
+            return "Codex";
+        }
+
+        return task.Title;
+    }
+
     private string BuildCompactStatusMessage(CodexTask task)
     {
         return task.Status switch
@@ -424,6 +612,22 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
             CodexSessionStatus.Interrupted => "Turn interrupted",
             CodexSessionStatus.Unknown => "Watcher issue",
             _ => "Waiting for Codex CLI"
+        };
+    }
+
+    private static string BuildCompactStatusText(CodexSessionStatus status)
+    {
+        return status switch
+        {
+            CodexSessionStatus.Idle => "空闲",
+            CodexSessionStatus.Processing => "思考中",
+            CodexSessionStatus.RunningTool => "调用工具",
+            CodexSessionStatus.Finishing => "整理结果",
+            CodexSessionStatus.Completed => "已完成",
+            CodexSessionStatus.Stalled => "可能卡住",
+            CodexSessionStatus.Interrupted => "已中断",
+            CodexSessionStatus.Unknown => "未知",
+            _ => "空闲"
         };
     }
 
@@ -475,7 +679,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
         StatusGlyph = status switch
         {
-            CodexSessionStatus.Completed => "+",
+            CodexSessionStatus.Completed => "√",
             CodexSessionStatus.Stalled => "!",
             CodexSessionStatus.Interrupted => "x",
             CodexSessionStatus.Unknown => "?",
@@ -526,6 +730,18 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         ClearApprovalFeedback();
     }
 
+    private void OnCompletedAutoCollapseTimerTick(object? sender, EventArgs e)
+    {
+        _completedAutoCollapseTimer.Stop();
+        if (CurrentStatus != CodexSessionStatus.Completed || _isManualExpanded || IsActionRequired)
+        {
+            return;
+        }
+
+        _isHoverExpanded = false;
+        IsExpanded = false;
+    }
+
     private static bool IsApprovalAction(string actionId)
     {
         return actionId.Contains("approve", StringComparison.OrdinalIgnoreCase)
@@ -541,6 +757,12 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
             or nameof(IslandLayoutSettings.AttentionCollapsedWidth))
         {
             CollapsedWidth = _layoutSettings.GetCollapsedWidth(CurrentStatus);
+        }
+
+        if (e.PropertyName is nameof(IslandLayoutSettings.ActionPanelMinHeight)
+            or nameof(IslandLayoutSettings.ExpandedRegionExpandedHeight))
+        {
+            RaiseExpandedPanelStateChanged();
         }
     }
 
@@ -561,5 +783,29 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         PrimaryActionCommand.RaiseCanExecuteChanged();
         SecondaryActionCommand.RaiseCanExecuteChanged();
         TertiaryActionCommand.RaiseCanExecuteChanged();
+    }
+
+    private void ShowCompletedState(CodexSessionStatus previousStatus)
+    {
+        _completedAutoCollapseTimer.Stop();
+
+        if (previousStatus != CodexSessionStatus.Completed)
+        {
+            _isManualExpanded = false;
+            _isHoverExpanded = false;
+            IsExpanded = true;
+        }
+
+        _completedAutoCollapseTimer.Start();
+    }
+
+    private void RaiseExpandedPanelStateChanged()
+    {
+        OnPropertyChanged(nameof(IsIdleExpandedState));
+        OnPropertyChanged(nameof(IsDetailPanelVisible));
+        OnPropertyChanged(nameof(IsExpandedTextVisible));
+        OnPropertyChanged(nameof(IsChangedFilesVisible));
+        OnPropertyChanged(nameof(ExpandedPanelMinHeight));
+        OnPropertyChanged(nameof(ExpandedRegionBaseHeight));
     }
 }

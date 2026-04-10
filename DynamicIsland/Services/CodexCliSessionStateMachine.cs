@@ -23,11 +23,11 @@ internal sealed class CodexCliSessionStateMachine
 {
     private static readonly IReadOnlyList<string> EmptyActions = Array.Empty<string>();
     private static readonly IReadOnlyList<string> EmptyFiles = Array.Empty<string>();
-    private static readonly TimeSpan CompletedDisplayDuration = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan CompletedDisplayDuration = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan InterruptedDisplayDuration = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ThinkingSuspectedThreshold = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan RunningToolLongThreshold = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan StalledThreshold = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan StalledThreshold = TimeSpan.FromMinutes(3);
     private static readonly StringComparer FileComparer = StringComparer.OrdinalIgnoreCase;
 
     private readonly List<string> _changedFiles = [];
@@ -36,6 +36,7 @@ internal sealed class CodexCliSessionStateMachine
     private string? _threadName;
     private string? _lastMessage;
     private string? _lastToolName;
+    private string? _lastToolDetail;
     private string? _currentOpenTool;
     private DateTimeOffset? _toolStartTime;
     private DateTimeOffset? _evaluationTime;
@@ -101,11 +102,11 @@ internal sealed class CodexCliSessionStateMachine
         var publicStatus = MapPublicStatus(derivedStatus);
         var title = !string.IsNullOrWhiteSpace(_threadName)
             ? _threadName!
-            : "Codex CLI";
+            : "Codex";
         var message = BuildMessage(derivedStatus);
 
         return new CodexCliSessionSnapshot(
-            new CodexTask(publicStatus, title, message, EmptyActions, UpdatedAt, SessionId, GetChangedFilesSnapshot()),
+            new CodexTask(publicStatus, title, message, EmptyActions, UpdatedAt, SessionId, GetChangedFilesSnapshot(), BuildDebugSource(derivedStatus)),
             derivedStatus);
     }
 
@@ -138,6 +139,7 @@ internal sealed class CodexCliSessionStateMachine
                 case ("response_item", "custom_tool_call"):
                     TrackFilesFromToolCall(payload);
                     var toolName = ReadToolName(payload);
+                    _lastToolDetail = ExtractToolDetail(payload, toolName);
                     _currentOpenTool = toolName;
                     _toolStartTime = timestamp;
                     return SetBaseState(SessionBaseState.RunningTool, BuildToolRunningMessage(toolName), timestamp, SessionEventKind.ToolStarted, toolName);
@@ -148,6 +150,9 @@ internal sealed class CodexCliSessionStateMachine
                     var completedToolName = _currentOpenTool ?? _lastToolName;
                     ClearOpenTool();
                     return SetBaseState(SessionBaseState.Processing, BuildPostToolMessage(completedToolName), timestamp, SessionEventKind.ToolOutput, completedToolName);
+
+                case ("response_item", "reasoning"):
+                    return ApplyReasoning(payload, timestamp);
 
                 case ("response_item", "message"):
                     return ApplyResponseMessage(payload, timestamp);
@@ -207,6 +212,16 @@ internal sealed class CodexCliSessionStateMachine
         }
 
         return false;
+    }
+
+    private bool ApplyReasoning(JsonElement payload, DateTimeOffset timestamp)
+    {
+        return SetBaseState(
+            SessionBaseState.Processing,
+            ReadReasoningText(payload) ?? "Codex is reasoning about the current turn.",
+            timestamp,
+            SessionEventKind.Reasoning,
+            toolName: null);
     }
 
     private bool ApplyAgentMessage(JsonElement payload, DateTimeOffset timestamp)
@@ -291,7 +306,7 @@ internal sealed class CodexCliSessionStateMachine
             && _currentOpenTool is null
             && LastEventAt.HasValue
             && now - LastEventAt.Value > ThinkingSuspectedThreshold
-            && _lastEventKind is SessionEventKind.TaskStarted or SessionEventKind.Commentary;
+            && _lastEventKind is SessionEventKind.TaskStarted or SessionEventKind.Commentary or SessionEventKind.Reasoning;
     }
 
     private bool ShouldMarkRunningToolLong(DateTimeOffset now)
@@ -472,6 +487,144 @@ internal sealed class CodexCliSessionStateMachine
             ?? ReadOptionalString(payload, "call_name");
     }
 
+    private static string? ExtractToolDetail(JsonElement payload, string? toolName)
+    {
+        if (string.Equals(toolName, "shell_command", StringComparison.OrdinalIgnoreCase))
+        {
+            return ExtractShellCommandDetail(payload);
+        }
+
+        if (string.Equals(toolName, "apply_patch", StringComparison.OrdinalIgnoreCase))
+        {
+            var input = ReadOptionalString(payload, "input");
+            if (!string.IsNullOrWhiteSpace(input))
+            {
+                var paths = ExtractFilesFromApplyPatch(input)
+                    .Take(3)
+                    .Select(path => System.IO.Path.GetFileName(NormalizeFilePath(path)))
+                    .Where(path => !string.IsNullOrWhiteSpace(path))
+                    .ToArray();
+                if (paths.Length > 0)
+                {
+                    return $"apply_patch -> {string.Join(", ", paths)}";
+                }
+
+                return TruncateSingleLine(input, 220);
+            }
+        }
+
+        var arguments = ReadOptionalString(payload, "arguments");
+        if (!string.IsNullOrWhiteSpace(arguments))
+        {
+            return TruncateSingleLine(arguments, 220);
+        }
+
+        var rawInput = ReadOptionalString(payload, "input");
+        if (!string.IsNullOrWhiteSpace(rawInput))
+        {
+            return TruncateSingleLine(rawInput, 220);
+        }
+
+        return null;
+    }
+
+    private static string? ExtractShellCommandDetail(JsonElement payload)
+    {
+        if (payload.TryGetProperty("arguments", out var argumentsElement))
+        {
+            if (argumentsElement.ValueKind == JsonValueKind.String)
+            {
+                var rawArguments = argumentsElement.GetString();
+                if (!string.IsNullOrWhiteSpace(rawArguments))
+                {
+                    return TryExtractShellCommandFromJson(rawArguments) ?? TruncateSingleLine(rawArguments, 320);
+                }
+            }
+
+            if (argumentsElement.ValueKind == JsonValueKind.Object)
+            {
+                return ExtractShellCommandFromObject(argumentsElement);
+            }
+        }
+
+        return ReadOptionalString(payload, "input");
+    }
+
+    private static string? TryExtractShellCommandFromJson(string rawArguments)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(rawArguments);
+            return ExtractShellCommandFromObject(document.RootElement);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? ExtractShellCommandFromObject(JsonElement arguments)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (arguments.TryGetProperty("command", out var commandElement))
+        {
+            var command = ReadCommandValue(commandElement);
+            if (!string.IsNullOrWhiteSpace(command))
+            {
+                return command;
+            }
+        }
+
+        if (arguments.TryGetProperty("cmd", out var cmdElement))
+        {
+            var command = ReadCommandValue(cmdElement);
+            if (!string.IsNullOrWhiteSpace(command))
+            {
+                return command;
+            }
+        }
+
+        return TruncateSingleLine(arguments.ToString(), 220);
+    }
+
+    private static string? ReadCommandValue(JsonElement commandElement)
+    {
+        if (commandElement.ValueKind == JsonValueKind.String)
+        {
+            return TruncateSingleLine(commandElement.GetString(), 320);
+        }
+
+        if (commandElement.ValueKind == JsonValueKind.Array)
+        {
+            var parts = commandElement.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString())
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .ToArray();
+            if (parts.Length > 0)
+            {
+                return TruncateSingleLine(string.Join(" ", parts), 320);
+            }
+        }
+
+        return null;
+    }
+
+    private static string TruncateSingleLine(string? value, int maxLength)
+    {
+        var normalized = NormalizeMessage(value ?? string.Empty).Replace('\n', ' ');
+        if (normalized.Length <= maxLength)
+        {
+            return normalized;
+        }
+
+        return normalized[..(maxLength - 1)] + "…";
+    }
+
     private static string BuildToolRunningMessage(string? toolName)
     {
         return toolName is not null
@@ -542,6 +695,39 @@ internal sealed class CodexCliSessionStateMachine
         return null;
     }
 
+    private static string? ReadReasoningText(JsonElement payload)
+    {
+        if (!payload.TryGetProperty("summary", out var summary) || summary.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var item in summary.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                var text = item.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+
+            if (item.ValueKind == JsonValueKind.Object)
+            {
+                var text = ReadOptionalString(item, "text")
+                    ?? ReadOptionalString(item, "summary")
+                    ?? ReadOptionalString(item, "content");
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static string? ReadOptionalString(JsonElement element, string propertyName)
     {
         return element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
@@ -569,6 +755,52 @@ internal sealed class CodexCliSessionStateMachine
             : trimmed.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
     }
 
+    private string BuildDebugSource(CodexCliDerivedStatus derivedStatus)
+    {
+        var lines = new List<string>
+        {
+            $"Derived: {derivedStatus}",
+            $"Public: {MapPublicStatus(derivedStatus)}",
+            $"Event: {FormatEventKind(_lastEventKind)}"
+        };
+
+        if (!string.IsNullOrWhiteSpace(_currentOpenTool ?? _lastToolName))
+        {
+            lines.Add($"Tool: {_currentOpenTool ?? _lastToolName}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_lastToolDetail))
+        {
+            lines.Add($"Command: {_lastToolDetail}");
+        }
+
+        if (LastEventAt.HasValue)
+        {
+            lines.Add($"EventTime: {LastEventAt.Value:O}");
+        }
+
+        lines.Add($"Session: {SessionId}");
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string FormatEventKind(SessionEventKind eventKind)
+    {
+        return eventKind switch
+        {
+            SessionEventKind.TaskStarted => "task_started",
+            SessionEventKind.Commentary => "commentary",
+            SessionEventKind.Reasoning => "reasoning",
+            SessionEventKind.ToolStarted => "tool_started",
+            SessionEventKind.ToolOutput => "tool_output",
+            SessionEventKind.FinalAnswer => "final_answer",
+            SessionEventKind.Completed => "task_complete",
+            SessionEventKind.Interrupted => "turn_aborted",
+            SessionEventKind.Rollback => "thread_rolled_back",
+            SessionEventKind.Unknown => "unknown",
+            _ => "none"
+        };
+    }
+
     private static bool AreEquivalent(CodexTask left, CodexTask right)
     {
         return left.Status == right.Status
@@ -576,7 +808,8 @@ internal sealed class CodexCliSessionStateMachine
             && left.Message == right.Message
             && left.SessionId == right.SessionId
             && left.AvailableActions.SequenceEqual(right.AvailableActions)
-            && (left.ChangedFiles ?? Array.Empty<string>()).SequenceEqual(right.ChangedFiles ?? Array.Empty<string>());
+            && (left.ChangedFiles ?? Array.Empty<string>()).SequenceEqual(right.ChangedFiles ?? Array.Empty<string>())
+            && left.DebugSource == right.DebugSource;
     }
 
     private enum SessionBaseState
@@ -595,6 +828,7 @@ internal sealed class CodexCliSessionStateMachine
         None,
         TaskStarted,
         Commentary,
+        Reasoning,
         ToolStarted,
         ToolOutput,
         FinalAnswer,

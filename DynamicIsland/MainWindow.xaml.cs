@@ -16,10 +16,12 @@ namespace DynamicIsland;
 public partial class MainWindow : Window
 {
     private const int WmDpiChanged = 0x02E0;
+    private static readonly TimeSpan ExpandedLayoutRefreshDelay = TimeSpan.FromMilliseconds(80);
 
     private readonly StatusViewModel _viewModel;
     private readonly IslandLayoutSettings _layoutSettings;
     private readonly DispatcherTimer _hoverTimer;
+    private readonly DispatcherTimer _expandedLayoutRefreshTimer;
     private HwndSource? _hwndSource;
 
     public MainWindow(StatusViewModel viewModel, IslandLayoutSettings layoutSettings)
@@ -43,6 +45,11 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromSeconds(1)
         };
         _hoverTimer.Tick += OnHoverTimerTick;
+        _expandedLayoutRefreshTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = ExpandedLayoutRefreshDelay
+        };
+        _expandedLayoutRefreshTimer.Tick += OnExpandedLayoutRefreshTimerTick;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -71,7 +78,9 @@ public partial class MainWindow : Window
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         MainSurface.SizeChanged -= OnMainSurfaceSizeChanged;
         _hoverTimer.Tick -= OnHoverTimerTick;
+        _expandedLayoutRefreshTimer.Tick -= OnExpandedLayoutRefreshTimerTick;
         _hoverTimer.Stop();
+        _expandedLayoutRefreshTimer.Stop();
 
         if (_hwndSource is not null)
         {
@@ -117,7 +126,7 @@ public partial class MainWindow : Window
             ApplyStatusPalette(_viewModel.CurrentStatus, animate: true);
             AnimationHelper.CreateStatusTransitionStoryboard(
                 StatusTextPanel,
-                GlyphContainer,
+                StatusStatePill,
                 StatusContentTranslateTransform).Begin();
         }
         else if (e.PropertyName == nameof(StatusViewModel.IsApprovalFeedbackVisible))
@@ -125,7 +134,7 @@ public partial class MainWindow : Window
             ApplyStatusPalette(_viewModel.CurrentStatus, animate: true);
             AnimationHelper.CreateStatusTransitionStoryboard(
                 StatusTextPanel,
-                GlyphContainer,
+                StatusStatePill,
                 StatusContentTranslateTransform).Begin();
         }
         else if (e.PropertyName == nameof(StatusViewModel.CollapsedWidth))
@@ -134,12 +143,18 @@ public partial class MainWindow : Window
         }
         else if (_viewModel.IsExpanded
                  && e.PropertyName is nameof(StatusViewModel.ChangedFiles)
+                    or nameof(StatusViewModel.ExpandedSectionTitle)
+                    or nameof(StatusViewModel.ExpandedDetailText)
+                    or nameof(StatusViewModel.IsExpandedTextVisible)
+                    or nameof(StatusViewModel.IsChangedFilesVisible)
                     or nameof(StatusViewModel.PanelHintText)
+                    or nameof(StatusViewModel.DebugSourceText)
+                    or nameof(StatusViewModel.DebugStatusText)
                     or nameof(StatusViewModel.IsPrimaryActionVisible)
                     or nameof(StatusViewModel.IsSecondaryActionVisible)
                     or nameof(StatusViewModel.IsTertiaryActionVisible))
         {
-            Dispatcher.BeginInvoke(() => UpdateExpansionState(isExpanded: true, animate: false), DispatcherPriority.Loaded);
+            QueueExpandedLayoutRefresh();
         }
         else if (e.PropertyName == nameof(StatusViewModel.IsBouncing) && _viewModel.IsBouncing)
         {
@@ -149,10 +164,10 @@ public partial class MainWindow : Window
 
     private void UpdateExpansionState(bool isExpanded, bool animate)
     {
-        DiagnosticsLogger.Write($"UpdateExpansionState expanded={isExpanded}, animate={animate}, widthTarget={(isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth)}");
         var currentMainSurfaceCornerRadius = MainSurface.CornerRadius;
         // Collapsed width still comes from StatusViewModel and follows IslandLayoutConfig.
         var targetWidth = isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth;
+        DiagnosticsLogger.Write($"UpdateExpansionState expanded={isExpanded}, animate={animate}, widthTarget={(isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth)}");
         var (targetHeight, targetExpandedRegionHeight) = isExpanded
             ? CalculateExpandedHeights(targetWidth)
             : (_layoutSettings.CollapsedHeight, 0.0);
@@ -208,8 +223,8 @@ public partial class MainWindow : Window
 
     private (double MainSurfaceHeight, double ExpandedRegionHeight) CalculateExpandedHeights(double targetWidth)
     {
-        var targetHeight = _layoutSettings.ExpandedHeight;
-        var targetExpandedRegionHeight = _layoutSettings.ExpandedRegionExpandedHeight;
+        var targetExpandedRegionHeight = _viewModel.ExpandedRegionBaseHeight;
+        var targetHeight = _layoutSettings.CollapsedHeight + targetExpandedRegionHeight;
 
         if (!IsLoaded)
         {
@@ -230,19 +245,43 @@ public partial class MainWindow : Window
     {
         var availableWidth = Math.Max(0, targetWidth - MainSurface.Padding.Left - MainSurface.Padding.Right);
         var previousExpandedRegionHeight = ExpandedRegion.Height;
+        var minimumExpandedRegionHeight = _viewModel.ExpandedRegionBaseHeight;
 
         try
         {
             ExpandedRegion.Height = double.NaN;
             ActionPanel.Measure(new System.Windows.Size(availableWidth, double.PositiveInfinity));
             var desiredHeight = ActionPanel.DesiredSize.Height + ActionPanel.Margin.Top + ActionPanel.Margin.Bottom;
-            return Math.Max(_layoutSettings.ExpandedRegionExpandedHeight, desiredHeight);
+            return Math.Max(minimumExpandedRegionHeight, desiredHeight);
         }
         finally
         {
             ExpandedRegion.Height = previousExpandedRegionHeight;
         }
     }
+
+    private void QueueExpandedLayoutRefresh()
+    {
+        if (!_viewModel.IsExpanded)
+        {
+            return;
+        }
+
+        _expandedLayoutRefreshTimer.Stop();
+        _expandedLayoutRefreshTimer.Start();
+    }
+
+    private void OnExpandedLayoutRefreshTimerTick(object? sender, EventArgs e)
+    {
+        _expandedLayoutRefreshTimer.Stop();
+        if (!_viewModel.IsExpanded)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() => UpdateExpansionState(isExpanded: true, animate: false), DispatcherPriority.Loaded);
+    }
+
 
     private void ApplyStatusPalette(CodexSessionStatus status, bool animate)
     {

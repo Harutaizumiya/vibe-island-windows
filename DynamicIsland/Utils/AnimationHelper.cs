@@ -35,6 +35,7 @@ public static class AnimationHelper
 
         var widthAnimation = new DoubleAnimation
         {
+            From = CoerceFinite(mainSurface.Width, mainSurface.ActualWidth),
             To = targetWidth,
             Duration = duration,
             EasingFunction = shellEasing
@@ -44,6 +45,7 @@ public static class AnimationHelper
 
         var heightAnimation = new DoubleAnimation
         {
+            From = CoerceFinite(mainSurface.Height, mainSurface.ActualHeight),
             To = targetHeight,
             Duration = duration,
             EasingFunction = shellEasing
@@ -53,6 +55,7 @@ public static class AnimationHelper
 
         var expandedRegionHeightAnimation = new DoubleAnimation
         {
+            From = CoerceFinite(expandedRegion.Height, expandedRegion.ActualHeight),
             To = targetExpandedRegionHeight,
             BeginTime = isExpanding ? TimeSpan.FromMilliseconds(24) : TimeSpan.Zero,
             Duration = TimeSpan.FromMilliseconds(isExpanding ? duration.TotalMilliseconds * 0.88 : duration.TotalMilliseconds * 0.72),
@@ -73,6 +76,7 @@ public static class AnimationHelper
 
         var panelOpacityAnimation = new DoubleAnimation
         {
+            From = CoerceFinite(actionPanel.Opacity, 1.0),
             To = targetPanelOpacity,
             BeginTime = isExpanding ? TimeSpan.FromMilliseconds(36) : TimeSpan.Zero,
             Duration = TimeSpan.FromMilliseconds(isExpanding ? duration.TotalMilliseconds * 0.64 : duration.TotalMilliseconds * 0.45),
@@ -83,6 +87,7 @@ public static class AnimationHelper
 
         var headerOpacityAnimation = new DoubleAnimation
         {
+            From = CoerceFinite(actionHeader.Opacity, 1.0),
             To = targetPanelOpacity,
             BeginTime = isExpanding ? TimeSpan.FromMilliseconds(68) : TimeSpan.Zero,
             Duration = TimeSpan.FromMilliseconds(isExpanding ? duration.TotalMilliseconds * 0.42 : duration.TotalMilliseconds * 0.3),
@@ -93,6 +98,7 @@ public static class AnimationHelper
 
         var buttonsOpacityAnimation = new DoubleAnimation
         {
+            From = CoerceFinite(actionButtons.Opacity, 1.0),
             To = targetPanelOpacity,
             BeginTime = isExpanding ? TimeSpan.FromMilliseconds(124) : TimeSpan.Zero,
             Duration = TimeSpan.FromMilliseconds(isExpanding ? duration.TotalMilliseconds * 0.34 : duration.TotalMilliseconds * 0.24),
@@ -103,6 +109,7 @@ public static class AnimationHelper
 
         var expandedRegionOffsetAnimation = new DoubleAnimation
         {
+            From = CoerceFinite(expandedRegionTranslateTransform.Y, 0.0),
             To = targetExpandedRegionOffset,
             BeginTime = isExpanding ? TimeSpan.FromMilliseconds(28) : TimeSpan.Zero,
             Duration = TimeSpan.FromMilliseconds(isExpanding ? duration.TotalMilliseconds * 0.7 : duration.TotalMilliseconds * 0.48),
@@ -113,6 +120,7 @@ public static class AnimationHelper
 
         var bounceScaleXAnimation = new DoubleAnimation
         {
+            From = CoerceFinite(islandScaleTransform.ScaleX, 1.0),
             To = 1.0,
             Duration = TimeSpan.FromMilliseconds(isExpanding ? duration.TotalMilliseconds * 0.55 : duration.TotalMilliseconds * 0.45),
             EasingFunction = contentEasing
@@ -122,6 +130,7 @@ public static class AnimationHelper
 
         var bounceScaleYAnimation = new DoubleAnimation
         {
+            From = CoerceFinite(islandScaleTransform.ScaleY, 1.0),
             To = 1.0,
             Duration = TimeSpan.FromMilliseconds(isExpanding ? duration.TotalMilliseconds * 0.55 : duration.TotalMilliseconds * 0.45),
             EasingFunction = contentEasing
@@ -140,6 +149,21 @@ public static class AnimationHelper
         storyboard.Children.Add(bounceScaleXAnimation);
         storyboard.Children.Add(bounceScaleYAnimation);
         return storyboard;
+    }
+
+    private static double CoerceFinite(double value, double fallback)
+    {
+        if (!double.IsNaN(value) && !double.IsInfinity(value))
+        {
+            return value;
+        }
+
+        if (!double.IsNaN(fallback) && !double.IsInfinity(fallback))
+        {
+            return fallback;
+        }
+
+        return 0.0;
     }
 
     public static Storyboard CreateStatusTransitionStoryboard(
