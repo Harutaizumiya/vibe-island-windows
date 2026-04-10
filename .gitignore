@@ -1,10 +1,12 @@
 .vs/
 .appdata/
 .dotnet-home/
+.run-obj/
 artifacts/
 
 **/bin/
 **/obj/
+**/PublishProfiles/
 
 *.user
 *.suo
