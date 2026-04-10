@@ -3,26 +3,50 @@ using DynamicIsland.Models;
 
 namespace DynamicIsland.Services;
 
+internal enum CodexCliDerivedStatus
+{
+    Idle,
+    Processing,
+    ThinkingSuspected,
+    RunningTool,
+    RunningToolLong,
+    Finishing,
+    Completed,
+    Stalled,
+    Interrupted,
+    Unknown
+}
+
+internal sealed record CodexCliSessionSnapshot(CodexTask Task, CodexCliDerivedStatus DerivedStatus);
+
 internal sealed class CodexCliSessionStateMachine
 {
     private static readonly IReadOnlyList<string> EmptyActions = Array.Empty<string>();
+    private static readonly IReadOnlyList<string> EmptyFiles = Array.Empty<string>();
     private static readonly TimeSpan CompletedDisplayDuration = TimeSpan.FromSeconds(3);
-    private static readonly TimeSpan StalledThreshold = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan InterruptedDisplayDuration = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ThinkingSuspectedThreshold = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan RunningToolLongThreshold = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan StalledThreshold = TimeSpan.FromMinutes(1);
+    private static readonly StringComparer FileComparer = StringComparer.OrdinalIgnoreCase;
 
+    private readonly List<string> _changedFiles = [];
+    private SessionBaseState _baseState = SessionBaseState.Idle;
+    private SessionEventKind _lastEventKind = SessionEventKind.None;
     private string? _threadName;
     private string? _lastMessage;
     private string? _lastToolName;
+    private string? _currentOpenTool;
+    private DateTimeOffset? _toolStartTime;
+    private DateTimeOffset? _evaluationTime;
 
     public CodexCliSessionStateMachine(string sessionId)
     {
         SessionId = sessionId;
-        Status = CodexSessionStatus.Idle;
         UpdatedAt = DateTimeOffset.MinValue;
     }
 
     public string SessionId { get; }
-
-    public CodexSessionStatus Status { get; private set; }
 
     public DateTimeOffset UpdatedAt { get; private set; }
 
@@ -54,40 +78,35 @@ internal sealed class CodexCliSessionStateMachine
 
     public bool MarkUnknown(string message, DateTimeOffset timestamp)
     {
-        return SetStatus(CodexSessionStatus.Unknown, message, timestamp, toolName: _lastToolName);
+        ClearOpenTool();
+        return SetBaseState(SessionBaseState.Unknown, message, timestamp, SessionEventKind.Unknown, toolName: null);
     }
 
     public bool AdvanceClock(DateTimeOffset now)
     {
-        if (Status == CodexSessionStatus.Completed && LastEventAt.HasValue && now - LastEventAt.Value >= CompletedDisplayDuration)
-        {
-            return SetStatus(CodexSessionStatus.Idle, "Waiting for an active Codex CLI session.", now, toolName: null);
-        }
-
-        if (Status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing
-            && LastEventAt.HasValue
-            && now - LastEventAt.Value >= StalledThreshold)
-        {
-            var detail = _lastToolName is not null
-                ? $"No new events arrived for 20 seconds while running {_lastToolName}."
-                : "No new events arrived for 20 seconds.";
-            return SetStatus(CodexSessionStatus.Stalled, detail, now, toolName: _lastToolName);
-        }
-
-        return false;
+        var previous = BuildSnapshot(GetEvaluationTime());
+        _evaluationTime = now;
+        var current = BuildSnapshot(now);
+        return !AreEquivalent(previous.Task, current.Task);
     }
 
     public CodexTask BuildTask()
     {
+        return BuildSnapshot(GetEvaluationTime()).Task;
+    }
+
+    internal CodexCliSessionSnapshot BuildSnapshot(DateTimeOffset now)
+    {
+        var derivedStatus = GetDerivedStatus(now);
+        var publicStatus = MapPublicStatus(derivedStatus);
         var title = !string.IsNullOrWhiteSpace(_threadName)
             ? _threadName!
             : "Codex CLI";
+        var message = BuildMessage(derivedStatus);
 
-        var message = Status == CodexSessionStatus.Idle
-            ? "Waiting for an active Codex CLI session."
-            : _lastMessage ?? BuildFallbackMessage(Status, _lastToolName);
-
-        return new CodexTask(Status, title, message, EmptyActions, UpdatedAt, SessionId);
+        return new CodexCliSessionSnapshot(
+            new CodexTask(publicStatus, title, message, EmptyActions, UpdatedAt, SessionId, GetChangedFilesSnapshot()),
+            derivedStatus);
     }
 
     private bool TryApplyDocument(JsonElement root)
@@ -98,6 +117,7 @@ internal sealed class CodexCliSessionStateMachine
         }
 
         var timestamp = TryReadTimestamp(root);
+        AlignEvaluationTime(timestamp);
 
         if (!root.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
         {
@@ -110,23 +130,24 @@ internal sealed class CodexCliSessionStateMachine
             switch (outerTypeElement.GetString(), payloadType)
             {
                 case ("event_msg", "task_started"):
-                    return SetStatus(CodexSessionStatus.Processing, "Starting a new Codex CLI turn.", timestamp, toolName: null);
+                    _changedFiles.Clear();
+                    ClearOpenTool();
+                    return SetBaseState(SessionBaseState.Processing, "Starting a new Codex CLI turn.", timestamp, SessionEventKind.TaskStarted, toolName: null);
 
                 case ("response_item", "function_call"):
                 case ("response_item", "custom_tool_call"):
-                    return SetStatus(
-                        CodexSessionStatus.RunningTool,
-                        BuildToolRunningMessage(payload),
-                        timestamp,
-                        ReadToolName(payload));
+                    TrackFilesFromToolCall(payload);
+                    var toolName = ReadToolName(payload);
+                    _currentOpenTool = toolName;
+                    _toolStartTime = timestamp;
+                    return SetBaseState(SessionBaseState.RunningTool, BuildToolRunningMessage(toolName), timestamp, SessionEventKind.ToolStarted, toolName);
 
                 case ("response_item", "function_call_output"):
                 case ("response_item", "custom_tool_call_output"):
-                    return SetStatus(
-                        CodexSessionStatus.Processing,
-                        BuildPostToolMessage(),
-                        timestamp,
-                        toolName: null);
+                    TrackFilesFromToolOutput(payload);
+                    var completedToolName = _currentOpenTool ?? _lastToolName;
+                    ClearOpenTool();
+                    return SetBaseState(SessionBaseState.Processing, BuildPostToolMessage(completedToolName), timestamp, SessionEventKind.ToolOutput, completedToolName);
 
                 case ("response_item", "message"):
                     return ApplyResponseMessage(payload, timestamp);
@@ -135,22 +156,26 @@ internal sealed class CodexCliSessionStateMachine
                     return ApplyAgentMessage(payload, timestamp);
 
                 case ("event_msg", "task_complete"):
-                    return SetStatus(
-                        CodexSessionStatus.Completed,
+                    ClearOpenTool();
+                    return SetBaseState(
+                        SessionBaseState.Completed,
                         ReadOptionalString(payload, "last_agent_message") ?? "The current Codex CLI turn completed.",
                         timestamp,
+                        SessionEventKind.Completed,
                         toolName: null);
 
                 case ("event_msg", "turn_aborted"):
                     if (string.Equals(ReadOptionalString(payload, "reason"), "interrupted", StringComparison.OrdinalIgnoreCase))
                     {
-                        return SetStatus(CodexSessionStatus.Interrupted, "The current Codex CLI turn was interrupted.", timestamp, toolName: null);
+                        ClearOpenTool();
+                        return SetBaseState(SessionBaseState.Interrupted, "The current Codex CLI turn was interrupted.", timestamp, SessionEventKind.Interrupted, toolName: null);
                     }
 
                     return false;
 
                 case ("event_msg", "thread_rolled_back"):
-                    return SetStatus(CodexSessionStatus.Interrupted, "Codex CLI rolled the thread back after an interruption.", timestamp, toolName: null);
+                    ClearOpenTool();
+                    return SetBaseState(SessionBaseState.Interrupted, "Codex CLI rolled the thread back after an interruption.", timestamp, SessionEventKind.Rollback, toolName: null);
             }
         }
 
@@ -162,19 +187,22 @@ internal sealed class CodexCliSessionStateMachine
         var phase = ReadOptionalString(payload, "phase");
         if (string.Equals(phase, "commentary", StringComparison.OrdinalIgnoreCase))
         {
-            return SetStatus(
-                CodexSessionStatus.Processing,
+            return SetBaseState(
+                SessionBaseState.Processing,
                 ReadResponseText(payload) ?? "Codex CLI is processing the current turn.",
                 timestamp,
+                SessionEventKind.Commentary,
                 toolName: null);
         }
 
         if (string.Equals(phase, "final_answer", StringComparison.OrdinalIgnoreCase))
         {
-            return SetStatus(
-                CodexSessionStatus.Finishing,
+            ClearOpenTool();
+            return SetBaseState(
+                SessionBaseState.Finishing,
                 ReadResponseText(payload) ?? "Codex CLI is preparing the final answer.",
                 timestamp,
+                SessionEventKind.FinalAnswer,
                 toolName: null);
         }
 
@@ -186,36 +214,255 @@ internal sealed class CodexCliSessionStateMachine
         var phase = ReadOptionalString(payload, "phase");
         if (string.Equals(phase, "commentary", StringComparison.OrdinalIgnoreCase))
         {
-            return SetStatus(
-                CodexSessionStatus.Processing,
+            return SetBaseState(
+                SessionBaseState.Processing,
                 ReadOptionalString(payload, "message") ?? "Codex CLI is processing the current turn.",
                 timestamp,
+                SessionEventKind.Commentary,
                 toolName: null);
         }
 
         if (string.Equals(phase, "final_answer", StringComparison.OrdinalIgnoreCase))
         {
-            return SetStatus(
-                CodexSessionStatus.Finishing,
+            ClearOpenTool();
+            return SetBaseState(
+                SessionBaseState.Finishing,
                 ReadOptionalString(payload, "message") ?? "Codex CLI is preparing the final answer.",
                 timestamp,
+                SessionEventKind.FinalAnswer,
                 toolName: null);
         }
 
         return false;
     }
 
-    private bool SetStatus(CodexSessionStatus status, string message, DateTimeOffset timestamp, string? toolName)
+    private bool SetBaseState(SessionBaseState baseState, string message, DateTimeOffset timestamp, SessionEventKind eventKind, string? toolName)
     {
-        var normalizedMessage = NormalizeMessage(message);
-        var changed = status != Status || !string.Equals(_lastMessage, normalizedMessage, StringComparison.Ordinal);
+        var previous = BuildSnapshot(GetEvaluationTime()).Task;
 
-        Status = status;
-        _lastMessage = normalizedMessage;
+        _baseState = baseState;
+        _lastEventKind = eventKind;
+        _lastMessage = NormalizeMessage(message);
         _lastToolName = toolName;
         LastEventAt = timestamp;
         UpdatedAt = timestamp;
-        return changed;
+        AlignEvaluationTime(timestamp);
+
+        var current = BuildSnapshot(GetEvaluationTime()).Task;
+        return !AreEquivalent(previous, current);
+    }
+
+    private CodexCliDerivedStatus GetDerivedStatus(DateTimeOffset now)
+    {
+        if (_baseState == SessionBaseState.Completed && LastEventAt.HasValue && now - LastEventAt.Value >= CompletedDisplayDuration)
+        {
+            return CodexCliDerivedStatus.Idle;
+        }
+
+        if (_baseState == SessionBaseState.Interrupted && LastEventAt.HasValue && now - LastEventAt.Value >= InterruptedDisplayDuration)
+        {
+            return CodexCliDerivedStatus.Idle;
+        }
+
+        if (_baseState is SessionBaseState.Processing or SessionBaseState.RunningTool or SessionBaseState.Finishing
+            && LastEventAt.HasValue
+            && now - LastEventAt.Value >= StalledThreshold)
+        {
+            return CodexCliDerivedStatus.Stalled;
+        }
+
+        return _baseState switch
+        {
+            SessionBaseState.Processing when ShouldSuspectThinking(now) => CodexCliDerivedStatus.ThinkingSuspected,
+            SessionBaseState.Processing => CodexCliDerivedStatus.Processing,
+            SessionBaseState.RunningTool when ShouldMarkRunningToolLong(now) => CodexCliDerivedStatus.RunningToolLong,
+            SessionBaseState.RunningTool => CodexCliDerivedStatus.RunningTool,
+            SessionBaseState.Finishing => CodexCliDerivedStatus.Finishing,
+            SessionBaseState.Completed => CodexCliDerivedStatus.Completed,
+            SessionBaseState.Interrupted => CodexCliDerivedStatus.Interrupted,
+            SessionBaseState.Unknown => CodexCliDerivedStatus.Unknown,
+            _ => CodexCliDerivedStatus.Idle
+        };
+    }
+
+    private bool ShouldSuspectThinking(DateTimeOffset now)
+    {
+        return _baseState == SessionBaseState.Processing
+            && _currentOpenTool is null
+            && LastEventAt.HasValue
+            && now - LastEventAt.Value > ThinkingSuspectedThreshold
+            && _lastEventKind is SessionEventKind.TaskStarted or SessionEventKind.Commentary;
+    }
+
+    private bool ShouldMarkRunningToolLong(DateTimeOffset now)
+    {
+        return _baseState == SessionBaseState.RunningTool
+            && _currentOpenTool is not null
+            && _toolStartTime.HasValue
+            && now - _toolStartTime.Value > RunningToolLongThreshold;
+    }
+
+    private string BuildMessage(CodexCliDerivedStatus derivedStatus)
+    {
+        return derivedStatus switch
+        {
+            CodexCliDerivedStatus.Idle => "Waiting for an active Codex CLI session.",
+            CodexCliDerivedStatus.ThinkingSuspected => "Codex may be reasoning (no new events).",
+            CodexCliDerivedStatus.RunningToolLong => BuildRunningToolLongMessage(),
+            CodexCliDerivedStatus.Stalled => "No new events; task may be stalled.",
+            _ => _lastMessage ?? BuildFallbackMessage(derivedStatus)
+        };
+    }
+
+    private string BuildRunningToolLongMessage()
+    {
+        var toolName = _currentOpenTool ?? _lastToolName;
+        return toolName is not null
+            ? $"Running {toolName} for a while."
+            : "Running a tool for a while.";
+    }
+
+    private IReadOnlyList<string> GetChangedFilesSnapshot()
+    {
+        return _changedFiles.Count == 0 ? EmptyFiles : _changedFiles.ToArray();
+    }
+
+    private void TrackFilesFromToolCall(JsonElement payload)
+    {
+        if (!string.Equals(ReadToolName(payload), "apply_patch", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var input = ReadOptionalString(payload, "input");
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return;
+        }
+
+        foreach (var path in ExtractFilesFromApplyPatch(input))
+        {
+            AddChangedFile(path);
+        }
+    }
+
+    private void TrackFilesFromToolOutput(JsonElement payload)
+    {
+        if (!string.Equals(_currentOpenTool ?? _lastToolName, "apply_patch", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var output = ReadOptionalString(payload, "output");
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return;
+        }
+
+        foreach (var path in ExtractFilesFromToolOutput(output))
+        {
+            AddChangedFile(path);
+        }
+    }
+
+    private void AddChangedFile(string path)
+    {
+        var normalizedPath = NormalizeFilePath(path);
+        if (string.IsNullOrWhiteSpace(normalizedPath))
+        {
+            return;
+        }
+
+        _changedFiles.RemoveAll(existing => FileComparer.Equals(existing, normalizedPath));
+        _changedFiles.Insert(0, normalizedPath);
+
+        const int maxFiles = 8;
+        if (_changedFiles.Count > maxFiles)
+        {
+            _changedFiles.RemoveRange(maxFiles, _changedFiles.Count - maxFiles);
+        }
+    }
+
+    private void ClearOpenTool()
+    {
+        _currentOpenTool = null;
+        _toolStartTime = null;
+    }
+
+    private void AlignEvaluationTime(DateTimeOffset timestamp)
+    {
+        if (!_evaluationTime.HasValue || timestamp > _evaluationTime.Value)
+        {
+            _evaluationTime = timestamp;
+        }
+    }
+
+    private DateTimeOffset GetEvaluationTime()
+    {
+        return _evaluationTime ?? LastEventAt ?? DateTimeOffset.UtcNow;
+    }
+
+    private static IEnumerable<string> ExtractFilesFromApplyPatch(string input)
+    {
+        var lines = input.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        foreach (var line in lines)
+        {
+            if (TryReadFileDirective(line, "*** Update File: ", out var updatedPath)
+                || TryReadFileDirective(line, "*** Add File: ", out updatedPath)
+                || TryReadFileDirective(line, "*** Delete File: ", out updatedPath)
+                || TryReadFileDirective(line, "*** Move to: ", out updatedPath))
+            {
+                yield return updatedPath!;
+            }
+        }
+    }
+
+    private static IEnumerable<string> ExtractFilesFromToolOutput(string output)
+    {
+        var text = TryReadNestedToolOutput(output) ?? output;
+        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.Length <= 2 || !char.IsLetter(line[0]) || !char.IsWhiteSpace(line[1]))
+            {
+                continue;
+            }
+
+            yield return line[2..].Trim();
+        }
+    }
+
+    private static bool TryReadFileDirective(string line, string prefix, out string? path)
+    {
+        if (line.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            path = line[prefix.Length..].Trim();
+            return !string.IsNullOrWhiteSpace(path);
+        }
+
+        path = null;
+        return false;
+    }
+
+    private static string? TryReadNestedToolOutput(string output)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(output);
+            return document.RootElement.TryGetProperty("output", out var outputElement) && outputElement.ValueKind == JsonValueKind.String
+                ? outputElement.GetString()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string NormalizeFilePath(string path)
+    {
+        return path.Trim().Trim('"').Replace('/', System.IO.Path.DirectorySeparatorChar);
     }
 
     private static string? ReadToolName(JsonElement payload)
@@ -225,32 +472,50 @@ internal sealed class CodexCliSessionStateMachine
             ?? ReadOptionalString(payload, "call_name");
     }
 
-    private static string BuildToolRunningMessage(JsonElement payload)
+    private static string BuildToolRunningMessage(string? toolName)
     {
-        var toolName = ReadToolName(payload);
         return toolName is not null
             ? $"Running {toolName}."
             : "Running a Codex CLI tool.";
     }
 
-    private string BuildPostToolMessage()
+    private static string BuildPostToolMessage(string? toolName)
     {
-        return _lastToolName is not null
-            ? $"Finished {_lastToolName}. Continuing the current turn."
+        return toolName is not null
+            ? $"Finished {toolName}. Continuing the current turn."
             : "Tool output received. Continuing the current turn.";
     }
 
-    private static string BuildFallbackMessage(CodexSessionStatus status, string? toolName)
+    private static CodexSessionStatus MapPublicStatus(CodexCliDerivedStatus derivedStatus)
     {
-        return status switch
+        return derivedStatus switch
         {
-            CodexSessionStatus.Processing => "Codex CLI is processing the current turn.",
-            CodexSessionStatus.RunningTool => toolName is not null ? $"Running {toolName}." : "Running a Codex CLI tool.",
-            CodexSessionStatus.Finishing => "Codex CLI is preparing the final answer.",
-            CodexSessionStatus.Completed => "The current Codex CLI turn completed.",
-            CodexSessionStatus.Stalled => "No new events arrived for 20 seconds.",
-            CodexSessionStatus.Interrupted => "The current Codex CLI turn was interrupted.",
-            CodexSessionStatus.Unknown => "Unable to read Codex CLI status.",
+            CodexCliDerivedStatus.ThinkingSuspected => CodexSessionStatus.Processing,
+            CodexCliDerivedStatus.RunningToolLong => CodexSessionStatus.RunningTool,
+            CodexCliDerivedStatus.Processing => CodexSessionStatus.Processing,
+            CodexCliDerivedStatus.RunningTool => CodexSessionStatus.RunningTool,
+            CodexCliDerivedStatus.Finishing => CodexSessionStatus.Finishing,
+            CodexCliDerivedStatus.Completed => CodexSessionStatus.Completed,
+            CodexCliDerivedStatus.Stalled => CodexSessionStatus.Stalled,
+            CodexCliDerivedStatus.Interrupted => CodexSessionStatus.Interrupted,
+            CodexCliDerivedStatus.Unknown => CodexSessionStatus.Unknown,
+            _ => CodexSessionStatus.Idle
+        };
+    }
+
+    private static string BuildFallbackMessage(CodexCliDerivedStatus derivedStatus)
+    {
+        return derivedStatus switch
+        {
+            CodexCliDerivedStatus.Processing => "Codex CLI is processing the current turn.",
+            CodexCliDerivedStatus.ThinkingSuspected => "Codex may be reasoning (no new events).",
+            CodexCliDerivedStatus.RunningTool => "Running a Codex CLI tool.",
+            CodexCliDerivedStatus.RunningToolLong => "Running a tool for a while.",
+            CodexCliDerivedStatus.Finishing => "Codex CLI is preparing the final answer.",
+            CodexCliDerivedStatus.Completed => "The current Codex CLI turn completed.",
+            CodexCliDerivedStatus.Stalled => "No new events; task may be stalled.",
+            CodexCliDerivedStatus.Interrupted => "The current Codex CLI turn was interrupted.",
+            CodexCliDerivedStatus.Unknown => "Unable to read Codex CLI status.",
             _ => "Waiting for an active Codex CLI session."
         };
     }
@@ -302,5 +567,40 @@ internal sealed class CodexCliSessionStateMachine
         return string.IsNullOrWhiteSpace(trimmed)
             ? "Codex CLI updated the current session."
             : trimmed.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+    }
+
+    private static bool AreEquivalent(CodexTask left, CodexTask right)
+    {
+        return left.Status == right.Status
+            && left.Title == right.Title
+            && left.Message == right.Message
+            && left.SessionId == right.SessionId
+            && left.AvailableActions.SequenceEqual(right.AvailableActions)
+            && (left.ChangedFiles ?? Array.Empty<string>()).SequenceEqual(right.ChangedFiles ?? Array.Empty<string>());
+    }
+
+    private enum SessionBaseState
+    {
+        Idle,
+        Processing,
+        RunningTool,
+        Finishing,
+        Completed,
+        Interrupted,
+        Unknown
+    }
+
+    private enum SessionEventKind
+    {
+        None,
+        TaskStarted,
+        Commentary,
+        ToolStarted,
+        ToolOutput,
+        FinalAnswer,
+        Completed,
+        Interrupted,
+        Rollback,
+        Unknown
     }
 }

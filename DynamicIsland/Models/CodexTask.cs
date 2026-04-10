@@ -6,4 +6,5 @@ public sealed record CodexTask(
     string Message,
     IReadOnlyList<string> AvailableActions,
     DateTimeOffset UpdatedAt,
-    string? SessionId = null);
+    string? SessionId = null,
+    IReadOnlyList<string>? ChangedFiles = null);

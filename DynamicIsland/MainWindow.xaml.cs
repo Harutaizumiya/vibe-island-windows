@@ -132,6 +132,15 @@ public partial class MainWindow : Window
         {
             UpdateExpansionState(_viewModel.IsExpanded, animate: true);
         }
+        else if (_viewModel.IsExpanded
+                 && e.PropertyName is nameof(StatusViewModel.ChangedFiles)
+                    or nameof(StatusViewModel.PanelHintText)
+                    or nameof(StatusViewModel.IsPrimaryActionVisible)
+                    or nameof(StatusViewModel.IsSecondaryActionVisible)
+                    or nameof(StatusViewModel.IsTertiaryActionVisible))
+        {
+            Dispatcher.BeginInvoke(() => UpdateExpansionState(isExpanded: true, animate: false), DispatcherPriority.Loaded);
+        }
         else if (e.PropertyName == nameof(StatusViewModel.IsBouncing) && _viewModel.IsBouncing)
         {
             AnimationHelper.CreateBounceStoryboard(IslandScaleTransform).Begin();
@@ -144,10 +153,9 @@ public partial class MainWindow : Window
         var currentMainSurfaceCornerRadius = MainSurface.CornerRadius;
         // Collapsed width still comes from StatusViewModel and follows IslandLayoutConfig.
         var targetWidth = isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth;
-        // Expanded/collapsed shell height is centralized in IslandLayoutConfig.
-        var targetHeight = isExpanded ? _layoutSettings.ExpandedHeight : _layoutSettings.CollapsedHeight;
-        // Approval/choice content reveal height is centralized in IslandLayoutConfig.
-        var targetExpandedRegionHeight = isExpanded ? _layoutSettings.ExpandedRegionExpandedHeight : 0.0;
+        var (targetHeight, targetExpandedRegionHeight) = isExpanded
+            ? CalculateExpandedHeights(targetWidth)
+            : (_layoutSettings.CollapsedHeight, 0.0);
         var targetPanelOpacity = isExpanded ? 1.0 : 0.0;
         var targetOffset = isExpanded ? 0.0 : -10.0;
         var targetMainSurfaceCornerRadius = isExpanded
@@ -196,6 +204,44 @@ public partial class MainWindow : Window
         };
 
         storyboard.Begin();
+    }
+
+    private (double MainSurfaceHeight, double ExpandedRegionHeight) CalculateExpandedHeights(double targetWidth)
+    {
+        var targetHeight = _layoutSettings.ExpandedHeight;
+        var targetExpandedRegionHeight = _layoutSettings.ExpandedRegionExpandedHeight;
+
+        if (!IsLoaded)
+        {
+            return (targetHeight, targetExpandedRegionHeight);
+        }
+
+        var measuredExpandedRegionHeight = MeasureExpandedRegionHeight(targetWidth);
+        if (measuredExpandedRegionHeight <= targetExpandedRegionHeight)
+        {
+            return (targetHeight, targetExpandedRegionHeight);
+        }
+
+        var overflowHeight = measuredExpandedRegionHeight - targetExpandedRegionHeight;
+        return (targetHeight + overflowHeight, measuredExpandedRegionHeight);
+    }
+
+    private double MeasureExpandedRegionHeight(double targetWidth)
+    {
+        var availableWidth = Math.Max(0, targetWidth - MainSurface.Padding.Left - MainSurface.Padding.Right);
+        var previousExpandedRegionHeight = ExpandedRegion.Height;
+
+        try
+        {
+            ExpandedRegion.Height = double.NaN;
+            ActionPanel.Measure(new System.Windows.Size(availableWidth, double.PositiveInfinity));
+            var desiredHeight = ActionPanel.DesiredSize.Height + ActionPanel.Margin.Top + ActionPanel.Margin.Bottom;
+            return Math.Max(_layoutSettings.ExpandedRegionExpandedHeight, desiredHeight);
+        }
+        finally
+        {
+            ExpandedRegion.Height = previousExpandedRegionHeight;
+        }
     }
 
     private void ApplyStatusPalette(CodexSessionStatus status, bool animate)

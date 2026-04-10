@@ -6,10 +6,16 @@ using DynamicIsland.ViewModels;
 var failures = new List<string>();
 
 Run(nameof(TaskLifecycleTransitions), TaskLifecycleTransitions);
-Run(nameof(StalledAfterToolTimeout), StalledAfterToolTimeout);
+Run(nameof(ThinkingSuspectedAfterProcessingDelay), ThinkingSuspectedAfterProcessingDelay);
+Run(nameof(RunningToolLongAfterToolDelay), RunningToolLongAfterToolDelay);
+Run(nameof(ThinkingSuspectedStallsAfterLongSilence), ThinkingSuspectedStallsAfterLongSilence);
+Run(nameof(RunningToolLongStallsAfterLongSilence), RunningToolLongStallsAfterLongSilence);
 Run(nameof(InterruptedSignalsWin), InterruptedSignalsWin);
+Run(nameof(InterruptedCoolsDownToIdle), InterruptedCoolsDownToIdle);
+Run(nameof(ApplyPatchTracksChangedFiles), ApplyPatchTracksChangedFiles);
 Run(nameof(MalformedJsonIsIgnored), MalformedJsonIsIgnored);
-Run(nameof(MostRecentSessionWinsOverOlderHigherPriorityState), MostRecentSessionWinsOverOlderHigherPriorityState);
+Run(nameof(RunningToolLongBeatsNewerProcessing), RunningToolLongBeatsNewerProcessing);
+Run(nameof(RunningToolBeatsThinkingSuspected), RunningToolBeatsThinkingSuspected);
 Run(nameof(ActiveSessionWinsOverNewerStalledSession), ActiveSessionWinsOverNewerStalledSession);
 Run(nameof(ServiceStartsBeforeBootAnimationCompletes), ServiceStartsBeforeBootAnimationCompletes);
 
@@ -65,23 +71,66 @@ void TaskLifecycleTransitions()
     Expect(machine.BuildTask().Status, CodexSessionStatus.Idle, "completed state should cool down to Idle after 3 seconds");
 }
 
-void StalledAfterToolTimeout()
+void ThinkingSuspectedAfterProcessingDelay()
 {
     var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f41337");
     var startedAt = DateTimeOffset.Parse("2026-04-09T03:00:00Z");
 
     Apply(machine, EventMessage("task_started", startedAt));
-    Apply(machine, FunctionCall("shell_command", startedAt.AddSeconds(1)));
-    Expect(machine.BuildTask().Status, CodexSessionStatus.RunningTool, "function_call should enter RunningTool");
 
-    machine.AdvanceClock(startedAt.AddSeconds(22));
-    Expect(machine.BuildTask().Status, CodexSessionStatus.Stalled, "running tool with no events for 20 seconds should stall");
+    var immediate = machine.BuildSnapshot(startedAt.AddSeconds(7));
+    Expect(immediate.Task.Status, CodexSessionStatus.Processing, "task_started should remain public Processing before 8 seconds");
+    Expect(immediate.DerivedStatus, CodexCliDerivedStatus.Processing, "task_started should remain internal Processing before 8 seconds");
+
+    var suspected = machine.BuildSnapshot(startedAt.AddSeconds(9));
+    Expect(suspected.Task.Status, CodexSessionStatus.Processing, "thinking suspected should still map to public Processing");
+    Expect(suspected.DerivedStatus, CodexCliDerivedStatus.ThinkingSuspected, "processing with no tool should become ThinkingSuspected after 8 seconds");
+}
+
+void RunningToolLongAfterToolDelay()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f41338");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T04:00:00Z");
+
+    Apply(machine, EventMessage("task_started", startedAt));
+    Apply(machine, FunctionCall("shell_command", startedAt.AddSeconds(1)));
+
+    var shortRun = machine.BuildSnapshot(startedAt.AddSeconds(10));
+    Expect(shortRun.Task.Status, CodexSessionStatus.RunningTool, "tool should remain public RunningTool before 10 seconds");
+    Expect(shortRun.DerivedStatus, CodexCliDerivedStatus.RunningTool, "tool should remain internal RunningTool before 10 seconds");
+
+    var longRun = machine.BuildSnapshot(startedAt.AddSeconds(12));
+    Expect(longRun.Task.Status, CodexSessionStatus.RunningTool, "running tool long should still map to public RunningTool");
+    Expect(longRun.DerivedStatus, CodexCliDerivedStatus.RunningToolLong, "tool should become RunningToolLong after 10 seconds");
+}
+
+void ThinkingSuspectedStallsAfterLongSilence()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f41339");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T04:10:00Z");
+
+    Apply(machine, EventMessage("task_started", startedAt));
+    var stalled = machine.BuildSnapshot(startedAt.AddSeconds(61));
+    Expect(stalled.Task.Status, CodexSessionStatus.Stalled, "thinking suspected should eventually stall after 1 minute");
+    Expect(stalled.DerivedStatus, CodexCliDerivedStatus.Stalled, "thinking suspected should transition to stalled internally");
+}
+
+void RunningToolLongStallsAfterLongSilence()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f4133a");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T04:20:00Z");
+
+    Apply(machine, EventMessage("task_started", startedAt));
+    Apply(machine, FunctionCall("shell_command", startedAt.AddSeconds(1)));
+    var stalled = machine.BuildSnapshot(startedAt.AddSeconds(62));
+    Expect(stalled.Task.Status, CodexSessionStatus.Stalled, "long-running tool should stall after 1 minute without events");
+    Expect(stalled.DerivedStatus, CodexCliDerivedStatus.Stalled, "running tool long should transition to stalled internally");
 }
 
 void InterruptedSignalsWin()
 {
-    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f41338");
-    var startedAt = DateTimeOffset.Parse("2026-04-09T04:00:00Z");
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f4133b");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T04:30:00Z");
 
     Apply(machine, EventMessage("task_started", startedAt));
     Apply(machine, TurnAborted(startedAt.AddSeconds(3)));
@@ -92,9 +141,47 @@ void InterruptedSignalsWin()
     Expect(machine.BuildTask().Status, CodexSessionStatus.Interrupted, "thread_rolled_back should stay Interrupted");
 }
 
+void InterruptedCoolsDownToIdle()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f4133c");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T04:40:00Z");
+
+    Apply(machine, EventMessage("task_started", startedAt));
+    Apply(machine, TurnAborted(startedAt.AddSeconds(2)));
+    Expect(machine.BuildTask().Status, CodexSessionStatus.Interrupted, "turn_aborted interrupted should enter Interrupted");
+
+    machine.AdvanceClock(startedAt.AddSeconds(8));
+    Expect(machine.BuildTask().Status, CodexSessionStatus.Idle, "interrupted state should cool down to Idle after 5 seconds");
+}
+
+void ApplyPatchTracksChangedFiles()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f4133d");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T05:00:00Z");
+
+    Apply(machine, EventMessage("task_started", startedAt));
+    Apply(machine, ApplyPatchCall(
+        """
+        *** Begin Patch
+        *** Update File: C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\MainWindow.xaml
+        @@
+        -old
+        +new
+        *** Add File: C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\Views\FilesPanel.xaml
+        +content
+        *** End Patch
+        """,
+        startedAt.AddSeconds(1)));
+
+    var task = machine.BuildTask();
+    Expect(task.ChangedFiles?.Count ?? 0, 2, "apply_patch input should track changed files");
+    Expect(task.ChangedFiles![0], @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\Views\FilesPanel.xaml", "most recent patch path should be first");
+    Expect(task.ChangedFiles![1], @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\MainWindow.xaml", "updated file should be retained");
+}
+
 void MalformedJsonIsIgnored()
 {
-    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f41339");
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f4133e");
     var success = machine.TryApplyLine("{not-json", out var error);
 
     if (success)
@@ -108,50 +195,85 @@ void MalformedJsonIsIgnored()
     }
 }
 
-void MostRecentSessionWinsOverOlderHigherPriorityState()
+void RunningToolLongBeatsNewerProcessing()
 {
-    var older = new CodexTask(
-        CodexSessionStatus.Stalled,
-        "Older session",
-        "No new events arrived.",
-        Array.Empty<string>(),
-        DateTimeOffset.Parse("2026-04-09T02:41:24Z"),
-        "older");
+    var older = new Candidate(
+        new CodexTask(
+            CodexSessionStatus.RunningTool,
+            "Older session",
+            "Running shell_command for a while.",
+            Array.Empty<string>(),
+            DateTimeOffset.Parse("2026-04-09T02:41:24Z"),
+            "older"),
+        CodexCliDerivedStatus.RunningToolLong);
 
-    var newer = new CodexTask(
-        CodexSessionStatus.Processing,
-        "Newer session",
-        "Codex CLI is processing the current turn.",
-        Array.Empty<string>(),
-        DateTimeOffset.Parse("2026-04-09T02:42:24Z"),
-        "newer");
+    var newer = new Candidate(
+        new CodexTask(
+            CodexSessionStatus.Processing,
+            "Newer session",
+            "Codex CLI is processing the current turn.",
+            Array.Empty<string>(),
+            DateTimeOffset.Parse("2026-04-09T02:42:24Z"),
+            "newer"),
+        CodexCliDerivedStatus.Processing);
 
     var selected = SelectCurrentTaskForTest(older, newer);
-    Expect(selected.SessionId ?? string.Empty, "newer", "newer session activity should beat older stalled activity");
-    Expect(selected.Status, CodexSessionStatus.Processing, "newer active session should remain visible");
+    Expect(selected.Task.SessionId ?? string.Empty, "older", "RunningToolLong should outrank a newer plain Processing session");
+    Expect(selected.DerivedStatus, CodexCliDerivedStatus.RunningToolLong, "selection should preserve the higher active priority");
+}
+
+void RunningToolBeatsThinkingSuspected()
+{
+    var runningTool = new Candidate(
+        new CodexTask(
+            CodexSessionStatus.RunningTool,
+            "Tool session",
+            "Running shell_command.",
+            Array.Empty<string>(),
+            DateTimeOffset.Parse("2026-04-09T03:05:56.596Z"),
+            "tool"),
+        CodexCliDerivedStatus.RunningTool);
+
+    var thinking = new Candidate(
+        new CodexTask(
+            CodexSessionStatus.Processing,
+            "Thinking session",
+            "Codex may be reasoning (no new events).",
+            Array.Empty<string>(),
+            DateTimeOffset.Parse("2026-04-09T03:05:57.282Z"),
+            "thinking"),
+        CodexCliDerivedStatus.ThinkingSuspected);
+
+    var selected = SelectCurrentTaskForTest(runningTool, thinking);
+    Expect(selected.Task.SessionId ?? string.Empty, "tool", "RunningTool should outrank ThinkingSuspected");
+    Expect(selected.DerivedStatus, CodexCliDerivedStatus.RunningTool, "selection should preserve RunningTool");
 }
 
 void ActiveSessionWinsOverNewerStalledSession()
 {
-    var active = new CodexTask(
-        CodexSessionStatus.Processing,
-        "Active session",
-        "Codex CLI is processing the current turn.",
-        Array.Empty<string>(),
-        DateTimeOffset.Parse("2026-04-09T03:05:56.596Z"),
-        "active");
+    var active = new Candidate(
+        new CodexTask(
+            CodexSessionStatus.Processing,
+            "Active session",
+            "Codex CLI is processing the current turn.",
+            Array.Empty<string>(),
+            DateTimeOffset.Parse("2026-04-09T03:05:56.596Z"),
+            "active"),
+        CodexCliDerivedStatus.Processing);
 
-    var stalled = new CodexTask(
-        CodexSessionStatus.Stalled,
-        "Older session",
-        "No new events arrived for 20 seconds.",
-        Array.Empty<string>(),
-        DateTimeOffset.Parse("2026-04-09T03:05:57.282Z"),
-        "stalled");
+    var stalled = new Candidate(
+        new CodexTask(
+            CodexSessionStatus.Stalled,
+            "Older session",
+            "No new events; task may be stalled.",
+            Array.Empty<string>(),
+            DateTimeOffset.Parse("2026-04-09T03:05:57.282Z"),
+            "stalled"),
+        CodexCliDerivedStatus.Stalled);
 
     var selected = SelectCurrentTaskForTest(active, stalled);
-    Expect(selected.SessionId ?? string.Empty, "active", "active session should remain visible even if another session stalls later");
-    Expect(selected.Status, CodexSessionStatus.Processing, "stalled sessions should not displace active work");
+    Expect(selected.Task.SessionId ?? string.Empty, "active", "active session should remain visible even if another session stalls later");
+    Expect(selected.DerivedStatus, CodexCliDerivedStatus.Processing, "stalled sessions should not displace active work");
 }
 
 void ServiceStartsBeforeBootAnimationCompletes()
@@ -228,6 +350,21 @@ static string FunctionCallOutput(DateTimeOffset timestamp)
     });
 }
 
+static string ApplyPatchCall(string input, DateTimeOffset timestamp)
+{
+    return JsonSerializer.Serialize(new
+    {
+        timestamp,
+        type = "response_item",
+        payload = new
+        {
+            type = "custom_tool_call",
+            name = "apply_patch",
+            input
+        }
+    });
+}
+
 static string ResponseMessage(string phase, string text, DateTimeOffset timestamp)
 {
     return JsonSerializer.Serialize(new
@@ -292,43 +429,61 @@ static string ThreadRolledBack(DateTimeOffset timestamp)
     });
 }
 
-static CodexTask SelectCurrentTaskForTest(params CodexTask[] tasks)
+static Candidate SelectCurrentTaskForTest(params Candidate[] candidates)
 {
-    var activeTasks = tasks
-        .Where(task => IsActiveStatusForTest(task.Status))
-        .OrderByDescending(task => task.UpdatedAt)
+    var activeCandidates = candidates
+        .Where(candidate => IsActiveStatusForTest(candidate.DerivedStatus))
+        .OrderBy(candidate => GetActivePriorityForTest(candidate.DerivedStatus))
+        .ThenByDescending(candidate => candidate.Task.UpdatedAt)
         .ToList();
 
-    if (activeTasks.Count > 0)
+    if (activeCandidates.Count > 0)
     {
-        return activeTasks[0];
+        return activeCandidates[0];
     }
 
-    return tasks
-        .OrderByDescending(task => task.UpdatedAt)
-        .ThenBy(task => GetPriorityForTest(task.Status))
+    return candidates
+        .OrderByDescending(candidate => candidate.Task.UpdatedAt)
+        .ThenBy(candidate => GetPriorityForTest(candidate.DerivedStatus))
         .First();
 }
 
-static int GetPriorityForTest(CodexSessionStatus status)
+static int GetPriorityForTest(CodexCliDerivedStatus status)
 {
     return status switch
     {
-        CodexSessionStatus.Unknown => 0,
-        CodexSessionStatus.Interrupted => 1,
-        CodexSessionStatus.Stalled => 2,
-        CodexSessionStatus.RunningTool => 3,
-        CodexSessionStatus.Processing => 4,
-        CodexSessionStatus.Finishing => 5,
-        CodexSessionStatus.Completed => 6,
-        _ => 7
+        CodexCliDerivedStatus.Unknown => 0,
+        CodexCliDerivedStatus.Interrupted => 1,
+        CodexCliDerivedStatus.Stalled => 2,
+        CodexCliDerivedStatus.Completed => 3,
+        _ => 4
     };
 }
 
-static bool IsActiveStatusForTest(CodexSessionStatus status)
+static int GetActivePriorityForTest(CodexCliDerivedStatus status)
 {
-    return status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing;
+    return status switch
+    {
+        CodexCliDerivedStatus.RunningToolLong => 0,
+        CodexCliDerivedStatus.RunningTool => 1,
+        CodexCliDerivedStatus.Finishing => 2,
+        CodexCliDerivedStatus.ThinkingSuspected => 3,
+        CodexCliDerivedStatus.Processing => 4,
+        _ => 5
+    };
 }
+
+static bool IsActiveStatusForTest(CodexCliDerivedStatus status)
+{
+    return status is
+        CodexCliDerivedStatus.Processing or
+        CodexCliDerivedStatus.ThinkingSuspected or
+        CodexCliDerivedStatus.RunningTool or
+        CodexCliDerivedStatus.RunningToolLong or
+        CodexCliDerivedStatus.Finishing;
+}
+
+sealed record Candidate(CodexTask Task, CodexCliDerivedStatus DerivedStatus);
 
 sealed class ProbeStatusService : ICodexStatusService
 {

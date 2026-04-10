@@ -32,6 +32,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private string _secondaryActionText = string.Empty;
     private string _tertiaryActionText = string.Empty;
     private string _panelHintText = "Waiting for the next actionable state.";
+    private IReadOnlyList<string> _changedFiles = Array.Empty<string>();
     private bool _isPrimaryActionVisible;
     private bool _isSecondaryActionVisible;
     private bool _isTertiaryActionVisible;
@@ -162,6 +163,12 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     {
         get => _panelHintText;
         private set => SetProperty(ref _panelHintText, value);
+    }
+
+    public IReadOnlyList<string> ChangedFiles
+    {
+        get => _changedFiles;
+        private set => SetProperty(ref _changedFiles, value);
     }
 
     public bool IsPrimaryActionVisible
@@ -312,6 +319,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         StatusText = task.Title;
         StatusMessage = task.Message;
         CompactStatusMessage = BuildCompactStatusMessage(task);
+        ChangedFiles = BuildChangedFiles(task);
         IsBusy = task.Status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing;
         IsActionRequired = task.AvailableActions.Count > 0;
 
@@ -357,17 +365,51 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     private string BuildPanelHint(CodexTask task)
     {
+        if ((task.ChangedFiles?.Count ?? 0) > 0)
+        {
+            return "The island is showing the latest files changed in this Codex session.";
+        }
+
         return task.Status switch
         {
             CodexSessionStatus.Processing => "Codex CLI is still thinking. The island will keep following the current turn.",
-            CodexSessionStatus.RunningTool => "A tool call is in flight. The panel stays collapsed unless you open it.",
+            CodexSessionStatus.RunningTool => "A tool call is in flight. If it keeps running, the island will continue following it.",
             CodexSessionStatus.Finishing => "Codex CLI is preparing the final answer for the current turn.",
             CodexSessionStatus.Completed => "This turn completed. The island will fall back to idle after a short cooldown.",
-            CodexSessionStatus.Stalled => "No new session events arrived for 20 seconds. Check the CLI if this persists.",
+            CodexSessionStatus.Stalled => "No meaningful session progress arrived for about a minute; the task may be stalled.",
             CodexSessionStatus.Interrupted => "The current turn was interrupted or rolled back before completion.",
             CodexSessionStatus.Unknown => "The live watcher could not determine the current session state.",
             _ => "No action is required right now. Tap the island to inspect the latest status message."
         };
+    }
+
+    private static IReadOnlyList<string> BuildChangedFiles(CodexTask task)
+    {
+        if (task.ChangedFiles is null || task.ChangedFiles.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        return task.ChangedFiles
+            .Select(FormatFileLabel)
+            .ToArray();
+    }
+
+    private static string FormatFileLabel(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return path;
+        }
+
+        var normalized = path.Replace('\\', '/');
+        var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length >= 2)
+        {
+            return $"{segments[^2]}/{segments[^1]}";
+        }
+
+        return normalized;
     }
 
     private string BuildCompactStatusMessage(CodexTask task)

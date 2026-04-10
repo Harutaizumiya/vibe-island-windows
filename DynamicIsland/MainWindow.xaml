@@ -163,12 +163,32 @@
                             </Grid.RowDefinitions>
 
                             <StackPanel x:Name="ActionPanelHeader">
-                                <TextBlock Text="{Binding StatusMessage}"
-                                           Foreground="{DynamicResource TextPrimaryBrush}"
-                                           FontSize="13"
+                                <TextBlock Text="CHANGED FILES"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           FontSize="10"
                                            FontWeight="SemiBold"
-                                           Margin="0,0,0,2"
-                                           TextWrapping="Wrap" />
+                                           Margin="0,0,0,6"
+                                           Opacity="0.9" />
+                                <Border Padding="10,8"
+                                        Margin="0,0,0,8"
+                                        CornerRadius="12"
+                                        Background="#14000000"
+                                        BorderBrush="#22FFFFFF"
+                                        BorderThickness="1">
+                                    <ItemsControl x:Name="ChangedFilesList"
+                                                  ItemsSource="{Binding ChangedFiles}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding}"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                                           FontSize="12"
+                                                           FontFamily="Cascadia Code"
+                                                           Margin="0,0,0,4"
+                                                           TextWrapping="Wrap" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Border>
                                 <TextBlock Text="{Binding PanelHintText}"
                                            Foreground="{DynamicResource TextSecondaryBrush}"
                                            FontSize="11"

@@ -301,7 +301,7 @@ public sealed class CodexCliStatusService : ICodexStatusService
         {
             var appliedLines = 0;
             var ignoredLines = 0;
-            var beforeTask = tracker.StateMachine.BuildTask();
+            var beforeSnapshot = tracker.StateMachine.BuildSnapshot(DateTimeOffset.UtcNow);
 
             using var stream = new FileStream(tracker.FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             if (resetOffset || stream.Length < tracker.LastOffset)
@@ -344,12 +344,16 @@ public sealed class CodexCliStatusService : ICodexStatusService
                 appliedLines++;
             }
 
-            var afterTask = tracker.StateMachine.BuildTask();
-            if (appliedLines > 0 || ignoredLines > 0 || beforeTask.Status != afterTask.Status || beforeTask.Message != afterTask.Message)
+            var afterSnapshot = tracker.StateMachine.BuildSnapshot(DateTimeOffset.UtcNow);
+            if (appliedLines > 0
+                || ignoredLines > 0
+                || beforeSnapshot.Task.Status != afterSnapshot.Task.Status
+                || beforeSnapshot.Task.Message != afterSnapshot.Task.Message
+                || beforeSnapshot.DerivedStatus != afterSnapshot.DerivedStatus)
             {
                 DiagnosticsLogger.Write(
                     $"Session {tracker.SessionId} read result: applied={appliedLines}, ignored={ignoredLines}, " +
-                    $"status {beforeTask.Status}->{afterTask.Status}, updatedAt={afterTask.UpdatedAt:O}, message={TruncateForLog(afterTask.Message)}");
+                    $"status {beforeSnapshot.DerivedStatus}->{afterSnapshot.DerivedStatus}, updatedAt={afterSnapshot.Task.UpdatedAt:O}, message={TruncateForLog(afterSnapshot.Task.Message)}");
             }
         }
         catch (Exception ex)
@@ -414,15 +418,15 @@ public sealed class CodexCliStatusService : ICodexStatusService
 
         var now = DateTimeOffset.UtcNow;
         var candidates = _trackers.Values
-            .Select(tracker => tracker.StateMachine.BuildTask())
-            .Where(task => task.Status != CodexSessionStatus.Idle && now - task.UpdatedAt <= ActiveSessionWindow)
+            .Select(tracker => tracker.StateMachine.BuildSnapshot(now))
+            .Where(snapshot => snapshot.Task.Status != CodexSessionStatus.Idle && now - snapshot.Task.UpdatedAt <= ActiveSessionWindow)
             .ToList();
 
         if (candidates.Count > 0)
         {
             var summary = string.Join(
                 " | ",
-                candidates.Take(5).Select(task => $"{task.SessionId}:{task.Status}@{task.UpdatedAt:HH:mm:ss.fff}"));
+                candidates.Take(5).Select(snapshot => $"{snapshot.Task.SessionId}:{snapshot.DerivedStatus}@{snapshot.Task.UpdatedAt:HH:mm:ss.fff}"));
             if (!string.Equals(_lastCandidateSummary, summary, StringComparison.Ordinal))
             {
                 _lastCandidateSummary = summary;
@@ -445,18 +449,20 @@ public sealed class CodexCliStatusService : ICodexStatusService
         }
 
         var activeCandidates = candidates
-            .Where(task => IsActiveStatus(task.Status))
-            .OrderByDescending(task => task.UpdatedAt)
+            .Where(snapshot => IsActiveStatus(snapshot.DerivedStatus))
+            .OrderBy(snapshot => GetActivePriority(snapshot.DerivedStatus))
+            .ThenByDescending(snapshot => snapshot.Task.UpdatedAt)
             .ToList();
 
         if (activeCandidates.Count > 0)
         {
-            return activeCandidates[0];
+            return activeCandidates[0].Task;
         }
 
         return candidates
-            .OrderByDescending(task => task.UpdatedAt)
-            .ThenBy(task => GetPriority(task.Status))
+            .OrderByDescending(snapshot => snapshot.Task.UpdatedAt)
+            .ThenBy(snapshot => GetPriority(snapshot.DerivedStatus))
+            .Select(snapshot => snapshot.Task)
             .First();
     }
 
@@ -469,36 +475,52 @@ public sealed class CodexCliStatusService : ICodexStatusService
                 .Select(tracker => new
                 {
                     Tracker = tracker,
-                    Task = tracker.StateMachine.BuildTask()
+                    Snapshot = tracker.StateMachine.BuildSnapshot(now)
                 })
                 .Where(entry =>
-                    entry.Task.Status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing
-                    && now - entry.Task.UpdatedAt <= ActiveSessionWindow)
-                .OrderByDescending(entry => entry.Task.UpdatedAt)
+                    IsActiveStatus(entry.Snapshot.DerivedStatus)
+                    && now - entry.Snapshot.Task.UpdatedAt <= ActiveSessionWindow)
+                .OrderBy(entry => GetActivePriority(entry.Snapshot.DerivedStatus))
+                .ThenByDescending(entry => entry.Snapshot.Task.UpdatedAt)
                 .Take(2)
                 .Select(entry => entry.Tracker)
                 .ToList();
         }
     }
 
-    private static int GetPriority(CodexSessionStatus status)
+    private static int GetPriority(CodexCliDerivedStatus status)
     {
         return status switch
         {
-            CodexSessionStatus.Unknown => 0,
-            CodexSessionStatus.Interrupted => 1,
-            CodexSessionStatus.Stalled => 2,
-            CodexSessionStatus.RunningTool => 3,
-            CodexSessionStatus.Processing => 4,
-            CodexSessionStatus.Finishing => 5,
-            CodexSessionStatus.Completed => 6,
-            _ => 7
+            CodexCliDerivedStatus.Unknown => 0,
+            CodexCliDerivedStatus.Interrupted => 1,
+            CodexCliDerivedStatus.Stalled => 2,
+            CodexCliDerivedStatus.Completed => 3,
+            _ => 4
         };
     }
 
-    private static bool IsActiveStatus(CodexSessionStatus status)
+    private static int GetActivePriority(CodexCliDerivedStatus status)
     {
-        return status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing;
+        return status switch
+        {
+            CodexCliDerivedStatus.RunningToolLong => 0,
+            CodexCliDerivedStatus.RunningTool => 1,
+            CodexCliDerivedStatus.Finishing => 2,
+            CodexCliDerivedStatus.ThinkingSuspected => 3,
+            CodexCliDerivedStatus.Processing => 4,
+            _ => 5
+        };
+    }
+
+    private static bool IsActiveStatus(CodexCliDerivedStatus status)
+    {
+        return status is
+            CodexCliDerivedStatus.Processing or
+            CodexCliDerivedStatus.ThinkingSuspected or
+            CodexCliDerivedStatus.RunningTool or
+            CodexCliDerivedStatus.RunningToolLong or
+            CodexCliDerivedStatus.Finishing;
     }
 
     private static bool AreEquivalent(CodexTask? left, CodexTask right)
@@ -512,7 +534,8 @@ public sealed class CodexCliStatusService : ICodexStatusService
             && left.Title == right.Title
             && left.Message == right.Message
             && left.SessionId == right.SessionId
-            && left.AvailableActions.SequenceEqual(right.AvailableActions);
+            && left.AvailableActions.SequenceEqual(right.AvailableActions)
+            && (left.ChangedFiles ?? Array.Empty<string>()).SequenceEqual(right.ChangedFiles ?? Array.Empty<string>());
     }
 
     private static string? TryParseSessionId(string path)
