@@ -1,4 +1,25 @@
 {
+  // 数据源模式：
+  // codex = 读取真实 Codex CLI 会话
+  // mock  = 使用内置模拟数据
   "serviceMode": "codex",
-  "debugMode": false
+
+  // 是否开启调试模式。
+  // 开启后会显示数据来源、内部状态和调试用提示词。
+  "debugMode": false,
+
+  // 交互行为配置。
+  "interaction": {
+    // 鼠标悬浮到岛体上时是否自动展开。
+    "expandOnHover": true,
+
+    // 悬浮触发展开后，鼠标离开或窗口失焦多久自动折叠，单位：秒。
+    "hoverAutoCollapseSeconds": 1,
+
+    // 点击触发展开后，鼠标离开或窗口失焦多久自动折叠，单位：秒。
+    "manualAutoCollapseSeconds": 3,
+
+    // 展开状态下，内容更新后延迟多久重新计算高度，单位：毫秒。
+    "expandedLayoutRefreshDelayMilliseconds": 40
+  }
 }

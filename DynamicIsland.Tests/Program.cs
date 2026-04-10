@@ -29,6 +29,8 @@ Run(nameof(CompactStatusUsesChineseLabels), CompactStatusUsesChineseLabels);
 Run(nameof(CompletedUsesCheckGlyph), CompletedUsesCheckGlyph);
 Run(nameof(CompletedStaysVisibleForOneMinute), CompletedStaysVisibleForOneMinute);
 Run(nameof(CompletedAutoExpandsThenAutoCollapses), CompletedAutoExpandsThenAutoCollapses);
+Run(nameof(HoverExpansionAutoCollapsesAfterFocusLoss), HoverExpansionAutoCollapsesAfterFocusLoss);
+Run(nameof(ManualExpansionAutoCollapsesAfterFocusLoss), ManualExpansionAutoCollapsesAfterFocusLoss);
 
 if (failures.Count > 0)
 {
@@ -593,6 +595,47 @@ void CompletedAutoExpandsThenAutoCollapses()
     Expect(viewModel.IsExpanded, false, "completed state should auto-collapse after the timer fires");
 
     viewModel.Dispose();
+}
+
+void HoverExpansionAutoCollapsesAfterFocusLoss()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    viewModel.ExpandFromHover();
+    Expect(viewModel.IsExpanded, true, "hover should expand the island immediately");
+
+    viewModel.ScheduleCollapseAfterFocusLoss();
+    InvokeNonPublic(viewModel, "OnFocusLossAutoCollapseTimerTick");
+    Expect(viewModel.IsExpanded, false, "hover expansion should auto-collapse after focus loss");
+
+    viewModel.Dispose();
+}
+
+void ManualExpansionAutoCollapsesAfterFocusLoss()
+{
+    var service = new ControllableStatusService();
+    var viewModel = new StatusViewModel(service, new DynamicIsland.UI.IslandLayoutSettings());
+
+    viewModel.ToggleExpandCommand.Execute(null);
+    Expect(viewModel.IsExpanded, true, "manual toggle should expand the island");
+
+    viewModel.ScheduleCollapseAfterFocusLoss();
+    InvokeNonPublic(viewModel, "OnFocusLossAutoCollapseTimerTick");
+    Expect(viewModel.IsExpanded, false, "manual expansion should auto-collapse after focus loss");
+
+    viewModel.Dispose();
+}
+
+static void InvokeNonPublic(object target, string methodName)
+{
+    var method = target.GetType().GetMethod(methodName, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+    if (method is null)
+    {
+        throw new InvalidOperationException($"Expected non-public method '{methodName}' to exist.");
+    }
+
+    method.Invoke(target, [null, EventArgs.Empty]);
 }
 
 static void Apply(CodexCliSessionStateMachine machine, string jsonLine)

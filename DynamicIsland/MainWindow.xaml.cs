@@ -16,11 +16,10 @@ namespace DynamicIsland;
 public partial class MainWindow : Window
 {
     private const int WmDpiChanged = 0x02E0;
-    private static readonly TimeSpan ExpandedLayoutRefreshDelay = TimeSpan.FromMilliseconds(80);
+    private const double ExpandedBottomSafeInset = 8;
 
     private readonly StatusViewModel _viewModel;
     private readonly IslandLayoutSettings _layoutSettings;
-    private readonly DispatcherTimer _hoverTimer;
     private readonly DispatcherTimer _expandedLayoutRefreshTimer;
     private HwndSource? _hwndSource;
 
@@ -40,14 +39,9 @@ public partial class MainWindow : Window
         MainSurface.SizeChanged += OnMainSurfaceSizeChanged;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         _layoutSettings.PropertyChanged += OnLayoutSettingsPropertyChanged;
-        _hoverTimer = new DispatcherTimer(DispatcherPriority.Background)
-        {
-            Interval = TimeSpan.FromSeconds(1)
-        };
-        _hoverTimer.Tick += OnHoverTimerTick;
         _expandedLayoutRefreshTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
-            Interval = ExpandedLayoutRefreshDelay
+            Interval = TimeSpan.FromMilliseconds(AppRuntimeOptions.Current.ExpandedLayoutRefreshDelayMilliseconds)
         };
         _expandedLayoutRefreshTimer.Tick += OnExpandedLayoutRefreshTimerTick;
     }
@@ -77,9 +71,7 @@ public partial class MainWindow : Window
         _layoutSettings.PropertyChanged -= OnLayoutSettingsPropertyChanged;
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         MainSurface.SizeChanged -= OnMainSurfaceSizeChanged;
-        _hoverTimer.Tick -= OnHoverTimerTick;
         _expandedLayoutRefreshTimer.Tick -= OnExpandedLayoutRefreshTimerTick;
-        _hoverTimer.Stop();
         _expandedLayoutRefreshTimer.Stop();
 
         if (_hwndSource is not null)
@@ -112,6 +104,7 @@ public partial class MainWindow : Window
     private void OnDeactivated(object? sender, EventArgs e)
     {
         DiagnosticsLogger.Write("MainWindow deactivated.");
+        _viewModel.ScheduleCollapseAfterFocusLoss();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -251,7 +244,7 @@ public partial class MainWindow : Window
         {
             ExpandedRegion.Height = double.NaN;
             ActionPanel.Measure(new System.Windows.Size(availableWidth, double.PositiveInfinity));
-            var desiredHeight = ActionPanel.DesiredSize.Height + ActionPanel.Margin.Top + ActionPanel.Margin.Bottom;
+            var desiredHeight = ActionPanel.DesiredSize.Height + ActionPanel.Margin.Top + ActionPanel.Margin.Bottom + ExpandedBottomSafeInset;
             return Math.Max(minimumExpandedRegionHeight, desiredHeight);
         }
         finally
@@ -350,15 +343,17 @@ public partial class MainWindow : Window
     private void MainSurface_OnMouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
     {
         DiagnosticsLogger.Write("Mouse entered island.");
-        _hoverTimer.Stop();
-        _hoverTimer.Start();
+        _viewModel.CancelScheduledCollapse();
+        if (_viewModel.ExpandOnHover)
+        {
+            _viewModel.ExpandFromHover();
+        }
     }
 
     private void MainSurface_OnMouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
     {
         DiagnosticsLogger.Write("Mouse left island.");
-        _hoverTimer.Stop();
-        _viewModel.CollapseHover();
+        _viewModel.ScheduleCollapseAfterFocusLoss();
     }
 
     private void StatusCard_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -372,13 +367,6 @@ public partial class MainWindow : Window
         DiagnosticsLogger.Write("Status card clicked.");
         _viewModel.ToggleExpandCommand.Execute(null);
         e.Handled = true;
-    }
-
-    private void OnHoverTimerTick(object? sender, EventArgs e)
-    {
-        DiagnosticsLogger.Write("Hover timer fired.");
-        _hoverTimer.Stop();
-        _viewModel.ExpandFromHover();
     }
 
     private void ApplyMainSurfaceClip()

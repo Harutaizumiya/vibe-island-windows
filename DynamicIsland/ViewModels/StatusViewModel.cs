@@ -26,6 +26,8 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private readonly DispatcherTimer _glyphTimer;
     private readonly DispatcherTimer _approvalFeedbackTimer;
     private readonly DispatcherTimer _completedAutoCollapseTimer;
+    private readonly DispatcherTimer _focusLossAutoCollapseTimer;
+    private readonly AppRuntimeOptions _runtimeOptions;
     private readonly bool _isDebugMode;
     private readonly string[] _workingGlyphFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private const string ApprovalGlyph = "✓";
@@ -63,6 +65,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     {
         _service = service;
         _layoutSettings = layoutSettings;
+        _runtimeOptions = AppRuntimeOptions.Current;
         _isDebugMode = AppRuntimeOptions.ResolveDebugMode();
         _service.TaskUpdated += OnTaskUpdated;
         _layoutSettings.PropertyChanged += OnLayoutSettingsPropertyChanged;
@@ -81,6 +84,8 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
             Interval = TimeSpan.FromSeconds(10)
         };
         _completedAutoCollapseTimer.Tick += OnCompletedAutoCollapseTimerTick;
+        _focusLossAutoCollapseTimer = new DispatcherTimer(DispatcherPriority.Background);
+        _focusLossAutoCollapseTimer.Tick += OnFocusLossAutoCollapseTimerTick;
         _collapsedWidth = _layoutSettings.GetCollapsedWidth(_currentStatus);
 
         ToggleExpandCommand = new RelayCommand(ToggleExpand);
@@ -90,6 +95,8 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     }
 
     public bool IsDebugMode => _isDebugMode;
+
+    public bool ExpandOnHover => _runtimeOptions.ExpandOnHover;
 
     public bool IsIdleCodexIconVisible => CurrentStatus == CodexSessionStatus.Idle && !IsApprovalFeedbackVisible;
 
@@ -309,6 +316,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     public void Collapse()
     {
+        _focusLossAutoCollapseTimer.Stop();
         _isManualExpanded = false;
         _isHoverExpanded = false;
         IsExpanded = false;
@@ -316,7 +324,9 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
     public void ExpandFromHover()
     {
-        if (IsActionRequired || _isManualExpanded || IsExpanded)
+        _focusLossAutoCollapseTimer.Stop();
+
+        if (IsActionRequired || _isManualExpanded)
         {
             return;
         }
@@ -325,15 +335,33 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         IsExpanded = true;
     }
 
-    public void CollapseHover()
+    public void ScheduleCollapseAfterFocusLoss()
     {
-        if (!_isHoverExpanded || IsActionRequired)
+        if (IsActionRequired || !IsExpanded)
         {
             return;
         }
 
-        _isHoverExpanded = false;
-        IsExpanded = false;
+        if (_isManualExpanded)
+        {
+            _focusLossAutoCollapseTimer.Interval = TimeSpan.FromSeconds(_runtimeOptions.ManualAutoCollapseSeconds);
+        }
+        else if (_isHoverExpanded)
+        {
+            _focusLossAutoCollapseTimer.Interval = TimeSpan.FromSeconds(_runtimeOptions.HoverAutoCollapseSeconds);
+        }
+        else
+        {
+            return;
+        }
+
+        _focusLossAutoCollapseTimer.Stop();
+        _focusLossAutoCollapseTimer.Start();
+    }
+
+    public void CancelScheduledCollapse()
+    {
+        _focusLossAutoCollapseTimer.Stop();
     }
 
     public void Dispose()
@@ -343,9 +371,11 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         _glyphTimer.Tick -= OnGlyphTimerTick;
         _approvalFeedbackTimer.Tick -= OnApprovalFeedbackTimerTick;
         _completedAutoCollapseTimer.Tick -= OnCompletedAutoCollapseTimerTick;
+        _focusLossAutoCollapseTimer.Tick -= OnFocusLossAutoCollapseTimerTick;
         _glyphTimer.Stop();
         _approvalFeedbackTimer.Stop();
         _completedAutoCollapseTimer.Stop();
+        _focusLossAutoCollapseTimer.Stop();
     }
 
     private async Task ExecutePrimaryActionAsync()
@@ -382,6 +412,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     private void ToggleExpand()
     {
         _isHoverExpanded = false;
+        _focusLossAutoCollapseTimer.Stop();
 
         if (IsExpanded && _isManualExpanded)
         {
@@ -438,6 +469,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         {
             _completedAutoCollapseTimer.Stop();
             _isHoverExpanded = false;
+            _focusLossAutoCollapseTimer.Stop();
             IsExpanded = true;
             _ = TriggerBounceAsync();
         }
@@ -445,6 +477,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         {
             _completedAutoCollapseTimer.Stop();
             _isHoverExpanded = false;
+            _focusLossAutoCollapseTimer.Stop();
             IsExpanded = false;
         }
 
@@ -706,6 +739,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
         _approvalFeedbackTimer.Stop();
         _isManualExpanded = false;
         _isHoverExpanded = false;
+        _focusLossAutoCollapseTimer.Stop();
         IsExpanded = false;
         IsApprovalFeedbackVisible = true;
         _glyphTimer.Stop();
@@ -740,6 +774,22 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
 
         _isHoverExpanded = false;
         IsExpanded = false;
+    }
+
+    private void OnFocusLossAutoCollapseTimerTick(object? sender, EventArgs e)
+    {
+        _focusLossAutoCollapseTimer.Stop();
+        if (IsActionRequired || !IsExpanded)
+        {
+            return;
+        }
+
+        if (_isManualExpanded || _isHoverExpanded)
+        {
+            _isManualExpanded = false;
+            _isHoverExpanded = false;
+            IsExpanded = false;
+        }
     }
 
     private static bool IsApprovalAction(string actionId)
