@@ -1,0 +1,456 @@
+using System.ComponentModel;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Threading;
+using DynamicIsland.Models;
+using DynamicIsland.UI;
+using DynamicIsland.Utils;
+using DynamicIsland.ViewModels;
+using Microsoft.Win32;
+
+namespace DynamicIsland;
+
+public partial class MainWindow : Window
+{
+    private const int WmDpiChanged = 0x02E0;
+    private const double ExpandedBottomSafeInset = 8;
+    private const double HostWindowBottomPadding = 16;
+
+    private readonly StatusViewModel _viewModel;
+    private readonly IslandLayoutSettings _layoutSettings;
+    private readonly DispatcherTimer _expandedLayoutRefreshTimer;
+    private HwndSource? _hwndSource;
+
+    public MainWindow(StatusViewModel viewModel, IslandLayoutSettings layoutSettings)
+    {
+        _viewModel = viewModel;
+        _layoutSettings = layoutSettings;
+        DataContext = _viewModel;
+
+        InitializeComponent();
+
+        Loaded += OnLoaded;
+        SourceInitialized += OnSourceInitialized;
+        Deactivated += OnDeactivated;
+        Closed += OnClosed;
+        SizeChanged += OnSizeChanged;
+        MainSurface.SizeChanged += OnMainSurfaceSizeChanged;
+        _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        _layoutSettings.PropertyChanged += OnLayoutSettingsPropertyChanged;
+        _expandedLayoutRefreshTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(AppRuntimeOptions.Current.ExpandedLayoutRefreshDelayMilliseconds)
+        };
+        _expandedLayoutRefreshTimer.Tick += OnExpandedLayoutRefreshTimerTick;
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        DiagnosticsLogger.Write("MainWindow loaded.");
+        ApplyStatusPalette(_viewModel.CurrentStatus, animate: false);
+        UpdateExpansionState(_viewModel.IsExpanded, animate: false);
+        ApplyMainSurfaceClip();
+        WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
+        DiagnosticsLogger.Write($"Window positioned at Left={Left}, Top={Top}, Width={Width}, Height={Height}.");
+    }
+
+    private void OnSourceInitialized(object? sender, EventArgs e)
+    {
+        var helper = new WindowInteropHelper(this);
+        _hwndSource = HwndSource.FromHwnd(helper.Handle);
+        _hwndSource?.AddHook(WndProc);
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        DiagnosticsLogger.Write("MainWindow closed.");
+        _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        _layoutSettings.PropertyChanged -= OnLayoutSettingsPropertyChanged;
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        MainSurface.SizeChanged -= OnMainSurfaceSizeChanged;
+        _expandedLayoutRefreshTimer.Tick -= OnExpandedLayoutRefreshTimerTick;
+        _expandedLayoutRefreshTimer.Stop();
+
+        if (_hwndSource is not null)
+        {
+            _hwndSource.RemoveHook(WndProc);
+            _hwndSource = null;
+        }
+    }
+
+    private void OnSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        ApplyMainSurfaceClip();
+        WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
+    }
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            ApplyMainSurfaceClip();
+            WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
+        });
+    }
+
+    private void OnMainSurfaceSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        ApplyMainSurfaceClip();
+    }
+
+    private void OnDeactivated(object? sender, EventArgs e)
+    {
+        DiagnosticsLogger.Write("MainWindow deactivated.");
+        _viewModel.ScheduleCollapseAfterFocusLoss();
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(StatusViewModel.IsExpanded))
+        {
+            DiagnosticsLogger.Write($"Window handling IsExpanded={_viewModel.IsExpanded}");
+            UpdateExpansionState(_viewModel.IsExpanded, animate: true);
+        }
+        else if (e.PropertyName == nameof(StatusViewModel.CurrentStatus))
+        {
+            ApplyStatusPalette(_viewModel.CurrentStatus, animate: true);
+            AnimationHelper.CreateStatusTransitionStoryboard(
+                StatusTextPanel,
+                StatusStatePill,
+                StatusContentTranslateTransform).Begin();
+        }
+        else if (e.PropertyName == nameof(StatusViewModel.IsApprovalFeedbackVisible))
+        {
+            ApplyStatusPalette(_viewModel.CurrentStatus, animate: true);
+            AnimationHelper.CreateStatusTransitionStoryboard(
+                StatusTextPanel,
+                StatusStatePill,
+                StatusContentTranslateTransform).Begin();
+        }
+        else if (e.PropertyName == nameof(StatusViewModel.CollapsedWidth))
+        {
+            UpdateExpansionState(_viewModel.IsExpanded, animate: true);
+        }
+        else if (_viewModel.IsExpanded
+                 && e.PropertyName is nameof(StatusViewModel.ChangedFiles)
+                    or nameof(StatusViewModel.ExpandedSectionTitle)
+                    or nameof(StatusViewModel.ExpandedDetailText)
+                    or nameof(StatusViewModel.IsExpandedTextVisible)
+                    or nameof(StatusViewModel.IsChangedFilesVisible)
+                    or nameof(StatusViewModel.PanelHintText)
+                    or nameof(StatusViewModel.DebugSourceText)
+                    or nameof(StatusViewModel.DebugStatusText)
+                    or nameof(StatusViewModel.IsPrimaryActionVisible)
+                    or nameof(StatusViewModel.IsSecondaryActionVisible)
+                    or nameof(StatusViewModel.IsTertiaryActionVisible))
+        {
+            QueueExpandedLayoutRefresh();
+        }
+        else if (e.PropertyName == nameof(StatusViewModel.IsBouncing) && _viewModel.IsBouncing)
+        {
+            AnimationHelper.CreateBounceStoryboard(IslandScaleTransform).Begin();
+        }
+    }
+
+    private void UpdateExpansionState(bool isExpanded, bool animate)
+    {
+        var currentMainSurfaceCornerRadius = MainSurface.CornerRadius;
+        // Collapsed width still comes from StatusViewModel and follows IslandLayoutConfig.
+        var targetWidth = isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth;
+        DiagnosticsLogger.Write($"UpdateExpansionState expanded={isExpanded}, animate={animate}, widthTarget={(isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth)}");
+        var (targetHeight, targetExpandedRegionHeight) = isExpanded
+            ? CalculateExpandedHeights(targetWidth)
+            : (_layoutSettings.CollapsedHeight, 0.0);
+        var targetPanelOpacity = isExpanded ? 1.0 : 0.0;
+        var targetOffset = isExpanded ? 0.0 : -10.0;
+        var targetMainSurfaceCornerRadius = isExpanded
+            ? _layoutSettings.ExpandedShellCornerRadius
+            : _layoutSettings.CollapsedShellCornerRadius;
+
+        if (!animate)
+        {
+            UpdateHostWindowHeight(targetHeight);
+            MainSurface.Width = targetWidth;
+            MainSurface.Height = targetHeight;
+            ExpandedRegion.Height = targetExpandedRegionHeight;
+            ExpandedRegionTranslateTransform.Y = targetOffset;
+            ActionPanel.Opacity = targetPanelOpacity;
+            ActionPanelHeader.Opacity = targetPanelOpacity;
+            ActionButtonsPanel.Opacity = targetPanelOpacity;
+            IslandScaleTransform.ScaleX = 1;
+            IslandScaleTransform.ScaleY = 1;
+            MainSurface.CornerRadius = targetMainSurfaceCornerRadius;
+            ApplyMainSurfaceClip();
+            return;
+        }
+
+        if (isExpanded)
+        {
+            UpdateHostWindowHeight(targetHeight);
+        }
+
+        var storyboard = AnimationHelper.CreateExpandStoryboard(
+            MainSurface,
+            ExpandedRegion,
+            ActionPanel,
+            ActionPanelHeader,
+            ActionButtonsPanel,
+            ExpandedRegionTranslateTransform,
+            IslandScaleTransform,
+            currentMainSurfaceCornerRadius,
+            targetMainSurfaceCornerRadius,
+            targetWidth,
+            targetHeight,
+            targetExpandedRegionHeight,
+            targetPanelOpacity,
+            targetOffset,
+            TimeSpan.FromMilliseconds(isExpanded ? 420 : 340),
+            isExpanded);
+
+        storyboard.Completed += (_, _) =>
+        {
+            if (!isExpanded)
+            {
+                UpdateHostWindowHeight(targetHeight);
+            }
+
+            MainSurface.CornerRadius = targetMainSurfaceCornerRadius;
+            ExpandedRegion.Height = targetExpandedRegionHeight;
+            ApplyMainSurfaceClip();
+        };
+
+        storyboard.Begin();
+    }
+
+    private (double MainSurfaceHeight, double ExpandedRegionHeight) CalculateExpandedHeights(double targetWidth)
+    {
+        var targetExpandedRegionHeight = _viewModel.ExpandedRegionBaseHeight;
+        var targetHeight = _layoutSettings.CollapsedHeight + targetExpandedRegionHeight;
+
+        if (!IsLoaded)
+        {
+            return (targetHeight, targetExpandedRegionHeight);
+        }
+
+        var measuredExpandedRegionHeight = MeasureExpandedRegionHeight(targetWidth);
+        if (measuredExpandedRegionHeight <= targetExpandedRegionHeight)
+        {
+            return (targetHeight, targetExpandedRegionHeight);
+        }
+
+        var overflowHeight = measuredExpandedRegionHeight - targetExpandedRegionHeight;
+        return (targetHeight + overflowHeight, measuredExpandedRegionHeight);
+    }
+
+    private double MeasureExpandedRegionHeight(double targetWidth)
+    {
+        var availableWidth = Math.Max(0, targetWidth - MainSurface.Padding.Left - MainSurface.Padding.Right);
+        var previousExpandedRegionHeight = ExpandedRegion.Height;
+        var minimumExpandedRegionHeight = _viewModel.ExpandedRegionBaseHeight;
+
+        try
+        {
+            ExpandedRegion.Height = double.NaN;
+            ActionPanel.Measure(new System.Windows.Size(availableWidth, double.PositiveInfinity));
+            var desiredHeight = ActionPanel.DesiredSize.Height + ActionPanel.Margin.Top + ActionPanel.Margin.Bottom + ExpandedBottomSafeInset;
+            return Math.Max(minimumExpandedRegionHeight, desiredHeight);
+        }
+        finally
+        {
+            ExpandedRegion.Height = previousExpandedRegionHeight;
+        }
+    }
+
+    private void UpdateHostWindowHeight(double mainSurfaceHeight)
+    {
+        var requiredHeight = Math.Max(
+            _layoutSettings.WindowHeight,
+            mainSurfaceHeight + MainSurface.Margin.Top + HostWindowBottomPadding);
+
+        SetCurrentValue(HeightProperty, requiredHeight);
+        SetCurrentValue(MinHeightProperty, requiredHeight);
+        SetCurrentValue(MaxHeightProperty, requiredHeight);
+    }
+
+    private void QueueExpandedLayoutRefresh()
+    {
+        if (!_viewModel.IsExpanded)
+        {
+            return;
+        }
+
+        _expandedLayoutRefreshTimer.Stop();
+        _expandedLayoutRefreshTimer.Start();
+    }
+
+    private void OnExpandedLayoutRefreshTimerTick(object? sender, EventArgs e)
+    {
+        _expandedLayoutRefreshTimer.Stop();
+        if (!_viewModel.IsExpanded)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() => UpdateExpansionState(isExpanded: true, animate: false), DispatcherPriority.Loaded);
+    }
+
+
+    private void ApplyStatusPalette(CodexSessionStatus status, bool animate)
+    {
+        var palette = status switch
+        {
+            CodexSessionStatus.RunningTool => new IslandPalette("#FF000000", "#FF212121", "#FF8DEBFF"),
+            CodexSessionStatus.Processing => new IslandPalette("#FF000000", "#FF181818", "#FFF4F4F4"),
+            CodexSessionStatus.Finishing => new IslandPalette("#FF000000", "#FF1D1D1D", "#FFC6FFD8"),
+            CodexSessionStatus.Completed => new IslandPalette("#FF000000", "#FF1A241C", "#FFA6F0B7"),
+            CodexSessionStatus.Stalled => new IslandPalette("#FF000000", "#FF322918", "#FFFFD17A"),
+            CodexSessionStatus.Interrupted => new IslandPalette("#FF000000", "#FF2A1818", "#FFFF9A9A"),
+            CodexSessionStatus.Unknown => new IslandPalette("#FF000000", "#FF202020", "#FFFFE68A"),
+            _ => new IslandPalette("#FF000000", "#FF161616", "#FFF2F2F2")
+        };
+
+        if (_viewModel.IsApprovalFeedbackVisible)
+        {
+            palette = new IslandPalette(palette.Background, "#FF21452B", "#FFA6F0B7");
+        }
+
+        AnimationHelper.TransitionBrush(MainSurfaceBackgroundBrush, palette.Background, animate, durationMs: 320);
+        AnimationHelper.TransitionBrush(MainSurfaceBorderBrush, palette.Border, animate, durationMs: 320);
+        AnimationHelper.TransitionBrush(GlyphBorderBrush, palette.Border, animate, durationMs: 280);
+        AnimationHelper.TransitionBrush(StatusAccentEllipseBrush, palette.Accent, animate, durationMs: 240);
+
+        var accentColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(palette.Accent)!;
+        StatusGlyphText.Foreground = new SolidColorBrush(_viewModel.IsApprovalFeedbackVisible
+            ? accentColor
+            : (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#FFF5F5F5")!);
+        GlyphContainer.Effect = new System.Windows.Media.Effects.DropShadowEffect
+        {
+            BlurRadius = 12,
+            ShadowDepth = 0,
+            Color = accentColor,
+            Opacity = _viewModel.IsApprovalFeedbackVisible
+                ? 0.16
+                : status is CodexSessionStatus.Processing or CodexSessionStatus.RunningTool or CodexSessionStatus.Finishing
+                    ? 0.08
+                    : 0.05
+        };
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WmDpiChanged)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                ApplyMainSurfaceClip();
+                WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
+            });
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private void RootGrid_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource == RootGrid)
+        {
+            _viewModel.Collapse();
+            e.Handled = true;
+        }
+    }
+
+    private void MainSurface_OnMouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        DiagnosticsLogger.Write("Mouse entered island.");
+        _viewModel.CancelScheduledCollapse();
+        if (_viewModel.ExpandOnHover)
+        {
+            _viewModel.ExpandFromHover();
+        }
+    }
+
+    private void MainSurface_OnMouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        DiagnosticsLogger.Write("Mouse left island.");
+        _viewModel.ScheduleCollapseAfterFocusLoss();
+    }
+
+    private void StatusCard_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is DependencyObject dependencyObject &&
+            FindAncestor<System.Windows.Controls.Button>(dependencyObject) is not null)
+        {
+            return;
+        }
+
+        DiagnosticsLogger.Write("Status card clicked.");
+        _viewModel.ToggleExpandCommand.Execute(null);
+        e.Handled = true;
+    }
+
+    private void ApplyMainSurfaceClip()
+    {
+        var width = MainSurface.ActualWidth > 0 ? MainSurface.ActualWidth : MainSurface.Width;
+        var height = MainSurface.ActualHeight > 0 ? MainSurface.ActualHeight : MainSurface.Height;
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        var bottomRadius = Math.Max(0, Math.Min(_layoutSettings.BottomCornerRadius, height / 2.0));
+
+        var bodyGeometry = new StreamGeometry();
+        using (var context = bodyGeometry.Open())
+        {
+            context.BeginFigure(new System.Windows.Point(0, 0), isFilled: true, isClosed: true);
+            context.LineTo(new System.Windows.Point(width, 0), isStroked: true, isSmoothJoin: false);
+            context.LineTo(new System.Windows.Point(width, height - bottomRadius), isStroked: true, isSmoothJoin: false);
+            context.QuadraticBezierTo(
+                new System.Windows.Point(width, height),
+                new System.Windows.Point(width - bottomRadius, height),
+                isStroked: true,
+                isSmoothJoin: true);
+
+            context.LineTo(new System.Windows.Point(bottomRadius, height), isStroked: true, isSmoothJoin: false);
+            context.QuadraticBezierTo(
+                new System.Windows.Point(0, height),
+                new System.Windows.Point(0, height - bottomRadius),
+                isStroked: true,
+                isSmoothJoin: true);
+
+            context.LineTo(new System.Windows.Point(0, 0), isStroked: true, isSmoothJoin: false);
+        }
+
+        bodyGeometry.Freeze();
+        MainSurface.Clip = bodyGeometry;
+    }
+
+    private void OnLayoutSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        UpdateExpansionState(_viewModel.IsExpanded, animate: false);
+        ApplyMainSurfaceClip();
+        WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current)
+        where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T match)
+            {
+                return match;
+            }
+
+            current = System.Windows.Media.VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
+    }
+
+    private readonly record struct IslandPalette(string Background, string Border, string Accent);
+}

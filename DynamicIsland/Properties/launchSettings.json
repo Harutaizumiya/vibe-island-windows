@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "DynamicIsland": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "DYNAMIC_ISLAND_SERVICE_MODE": "codex"
+      }
+    }
+  }
+}
