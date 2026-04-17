@@ -49,12 +49,12 @@ public partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        DiagnosticsLogger.Write("MainWindow loaded.");
+        DiagnosticsLogger.WriteInfo("MainWindow loaded.");
         ApplyStatusPalette(_viewModel.CurrentStatus, animate: false);
         UpdateExpansionState(_viewModel.IsExpanded, animate: false);
         ApplyMainSurfaceClip();
         WindowPositionHelper.PositionTopCenter(this, topMargin: _layoutSettings.ScreenTopMargin);
-        DiagnosticsLogger.Write($"Window positioned at Left={Left}, Top={Top}, Width={Width}, Height={Height}.");
+        DiagnosticsLogger.WriteVerbose($"Window positioned at Left={Left}, Top={Top}, Width={Width}, Height={Height}.");
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -67,7 +67,7 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
-        DiagnosticsLogger.Write("MainWindow closed.");
+        DiagnosticsLogger.WriteInfo("MainWindow closed.");
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         _layoutSettings.PropertyChanged -= OnLayoutSettingsPropertyChanged;
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
@@ -104,7 +104,7 @@ public partial class MainWindow : Window
 
     private void OnDeactivated(object? sender, EventArgs e)
     {
-        DiagnosticsLogger.Write("MainWindow deactivated.");
+        DiagnosticsLogger.WriteVerbose("MainWindow deactivated.");
         _viewModel.ScheduleCollapseAfterFocusLoss();
     }
 
@@ -112,7 +112,7 @@ public partial class MainWindow : Window
     {
         if (e.PropertyName == nameof(StatusViewModel.IsExpanded))
         {
-            DiagnosticsLogger.Write($"Window handling IsExpanded={_viewModel.IsExpanded}");
+            DiagnosticsLogger.WriteVerbose($"Window handling IsExpanded={_viewModel.IsExpanded}");
             UpdateExpansionState(_viewModel.IsExpanded, animate: true);
         }
         else if (e.PropertyName == nameof(StatusViewModel.CurrentStatus))
@@ -161,7 +161,7 @@ public partial class MainWindow : Window
         var currentMainSurfaceCornerRadius = MainSurface.CornerRadius;
         // Collapsed width still comes from StatusViewModel and follows IslandLayoutConfig.
         var targetWidth = isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth;
-        DiagnosticsLogger.Write($"UpdateExpansionState expanded={isExpanded}, animate={animate}, widthTarget={(isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth)}");
+        DiagnosticsLogger.WriteVerbose($"UpdateExpansionState expanded={isExpanded}, animate={animate}, widthTarget={(isExpanded ? _layoutSettings.ExpandedWidth : _viewModel.CollapsedWidth)}");
         var (targetHeight, targetExpandedRegionHeight) = isExpanded
             ? CalculateExpandedHeights(targetWidth)
             : (_layoutSettings.CollapsedHeight, 0.0);
@@ -365,7 +365,7 @@ public partial class MainWindow : Window
 
     private void MainSurface_OnMouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
     {
-        DiagnosticsLogger.Write("Mouse entered island.");
+        DiagnosticsLogger.WriteVerbose("Mouse entered island.");
         _viewModel.CancelScheduledCollapse();
         if (_viewModel.ExpandOnHover)
         {
@@ -375,7 +375,7 @@ public partial class MainWindow : Window
 
     private void MainSurface_OnMouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
     {
-        DiagnosticsLogger.Write("Mouse left island.");
+        DiagnosticsLogger.WriteVerbose("Mouse left island.");
         _viewModel.ScheduleCollapseAfterFocusLoss();
     }
 
@@ -387,7 +387,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        DiagnosticsLogger.Write("Status card clicked.");
+        DiagnosticsLogger.WriteVerbose("Status card clicked.");
         _viewModel.ToggleExpandCommand.Execute(null);
         e.Handled = true;
     }

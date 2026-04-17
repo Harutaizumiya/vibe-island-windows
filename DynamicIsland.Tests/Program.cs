@@ -14,6 +14,9 @@ Run(nameof(RunningToolLongStallsAfterLongSilence), RunningToolLongStallsAfterLon
 Run(nameof(InterruptedSignalsWin), InterruptedSignalsWin);
 Run(nameof(InterruptedCoolsDownToIdle), InterruptedCoolsDownToIdle);
 Run(nameof(ApplyPatchTracksChangedFiles), ApplyPatchTracksChangedFiles);
+Run(nameof(TrackerRetentionCapsToFourSessions), TrackerRetentionCapsToFourSessions);
+Run(nameof(SelectedAndActivePollSessionsAreRetained), SelectedAndActivePollSessionsAreRetained);
+Run(nameof(ThreadNameRetentionKeepsTrackedSessions), ThreadNameRetentionKeepsTrackedSessions);
 Run(nameof(MalformedJsonIsIgnored), MalformedJsonIsIgnored);
 Run(nameof(RunningToolLongBeatsNewerProcessing), RunningToolLongBeatsNewerProcessing);
 Run(nameof(RunningToolBeatsThinkingSuspected), RunningToolBeatsThinkingSuspected);
@@ -23,6 +26,8 @@ Run(nameof(ExpandedContentFollowsProcessingAndToolStates), ExpandedContentFollow
 Run(nameof(FallbackExpandedMessagesStayDebugOnly), FallbackExpandedMessagesStayDebugOnly);
 Run(nameof(ShellCommandDetailsAreCapturedFromFunctionCall), ShellCommandDetailsAreCapturedFromFunctionCall);
 Run(nameof(ExpandedContentShowsChangedFilesOnlyAfterCompletion), ExpandedContentShowsChangedFilesOnlyAfterCompletion);
+Run(nameof(BuildTaskOmitsDebugSourceOutsideDebugMode), BuildTaskOmitsDebugSourceOutsideDebugMode);
+Run(nameof(BuildSnapshotReturnsCachedInstanceWhenStateIsUnchanged), BuildSnapshotReturnsCachedInstanceWhenStateIsUnchanged);
 Run(nameof(IdleUsesCodexIcon), IdleUsesCodexIcon);
 Run(nameof(IdleShowsCodexTitle), IdleShowsCodexTitle);
 Run(nameof(CompactStatusUsesChineseLabels), CompactStatusUsesChineseLabels);
@@ -207,6 +212,58 @@ void ApplyPatchTracksChangedFiles()
     Expect(task.ChangedFiles?.Count ?? 0, 2, "apply_patch input should track changed files");
     Expect(task.ChangedFiles![0], @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\Views\FilesPanel.xaml", "most recent patch path should be first");
     Expect(task.ChangedFiles![1], @"C:\Users\Haruta\Documents\code\APP\vibe-island-windows\DynamicIsland\MainWindow.xaml", "updated file should be retained");
+}
+
+void TrackerRetentionCapsToFourSessions()
+{
+    var retained = CodexCliStatusService.SelectRetainedSessionIdsForTest(
+        [
+            new CodexCliRetentionCandidate("session-1", CodexCliDerivedStatus.Processing, DateTimeOffset.Parse("2026-04-09T05:00:00Z"), DateTimeOffset.Parse("2026-04-09T05:00:00Z"), DateTimeOffset.MinValue, DateTimeOffset.Parse("2026-04-09T05:00:00Z"), false, false),
+            new CodexCliRetentionCandidate("session-2", CodexCliDerivedStatus.RunningTool, DateTimeOffset.Parse("2026-04-09T05:00:05Z"), DateTimeOffset.Parse("2026-04-09T05:00:05Z"), DateTimeOffset.MinValue, DateTimeOffset.Parse("2026-04-09T05:00:05Z"), false, false),
+            new CodexCliRetentionCandidate("session-3", CodexCliDerivedStatus.Completed, DateTimeOffset.Parse("2026-04-09T05:00:06Z"), DateTimeOffset.Parse("2026-04-09T05:00:06Z"), DateTimeOffset.MinValue, DateTimeOffset.Parse("2026-04-09T05:00:06Z"), false, false),
+            new CodexCliRetentionCandidate("session-4", CodexCliDerivedStatus.Processing, DateTimeOffset.Parse("2026-04-09T05:00:07Z"), DateTimeOffset.Parse("2026-04-09T05:00:07Z"), DateTimeOffset.MinValue, DateTimeOffset.Parse("2026-04-09T05:00:07Z"), false, false),
+            new CodexCliRetentionCandidate("session-5", CodexCliDerivedStatus.Stalled, DateTimeOffset.Parse("2026-04-09T05:00:08Z"), DateTimeOffset.Parse("2026-04-09T05:00:08Z"), DateTimeOffset.MinValue, DateTimeOffset.Parse("2026-04-09T05:00:08Z"), false, false)
+        ]);
+
+    Expect(retained.Count, 4, "tracker retention should cap the service cache at four sessions");
+    Expect(retained.Contains("session-2"), true, "active running-tool sessions should be retained");
+    Expect(retained.Contains("session-4"), true, "newer active processing sessions should be retained");
+}
+
+void SelectedAndActivePollSessionsAreRetained()
+{
+    var retained = CodexCliStatusService.SelectRetainedSessionIdsForTest(
+        [
+            new CodexCliRetentionCandidate("selected", CodexCliDerivedStatus.Completed, DateTimeOffset.Parse("2026-04-09T05:10:00Z"), DateTimeOffset.Parse("2026-04-09T05:10:00Z"), DateTimeOffset.Parse("2026-04-09T05:10:00Z"), DateTimeOffset.Parse("2026-04-09T05:10:00Z"), true, false),
+            new CodexCliRetentionCandidate("active-poll", CodexCliDerivedStatus.Processing, DateTimeOffset.Parse("2026-04-09T05:10:01Z"), DateTimeOffset.Parse("2026-04-09T05:10:01Z"), DateTimeOffset.MinValue, DateTimeOffset.Parse("2026-04-09T05:10:01Z"), false, true),
+            new CodexCliRetentionCandidate("session-3", CodexCliDerivedStatus.RunningToolLong, DateTimeOffset.Parse("2026-04-09T05:10:02Z"), DateTimeOffset.Parse("2026-04-09T05:10:02Z"), DateTimeOffset.MinValue, DateTimeOffset.Parse("2026-04-09T05:10:02Z"), false, false),
+            new CodexCliRetentionCandidate("session-4", CodexCliDerivedStatus.Stalled, DateTimeOffset.Parse("2026-04-09T05:10:03Z"), DateTimeOffset.Parse("2026-04-09T05:10:03Z"), DateTimeOffset.MinValue, DateTimeOffset.Parse("2026-04-09T05:10:03Z"), false, false),
+            new CodexCliRetentionCandidate("session-5", CodexCliDerivedStatus.Interrupted, DateTimeOffset.Parse("2026-04-09T05:10:04Z"), DateTimeOffset.Parse("2026-04-09T05:10:04Z"), DateTimeOffset.MinValue, DateTimeOffset.Parse("2026-04-09T05:10:04Z"), false, false)
+        ]);
+
+    Expect(retained.Contains("selected"), true, "the currently published session should never be trimmed");
+    Expect(retained.Contains("active-poll"), true, "active-poll sessions should never be trimmed");
+}
+
+void ThreadNameRetentionKeepsTrackedSessions()
+{
+    var candidates = new List<CodexCliThreadNameCandidate>
+    {
+        new("tracked-old", DateTimeOffset.Parse("2026-04-09T05:20:00Z"), true)
+    };
+
+    for (var index = 0; index < 19; index++)
+    {
+        candidates.Add(new CodexCliThreadNameCandidate(
+            $"session-{index}",
+            DateTimeOffset.Parse("2026-04-09T05:20:00Z").AddMinutes(index + 1),
+            false));
+    }
+
+    var retained = CodexCliStatusService.SelectRetainedThreadNamesForTest(candidates);
+    Expect(retained.Count, 16, "thread-name retention should cap the cache at sixteen entries");
+    Expect(retained.Contains("tracked-old"), true, "tracked sessions should keep their thread names even if they are older");
+    Expect(retained.Contains("session-0"), false, "old untracked thread names should be eligible for trimming");
 }
 
 void MalformedJsonIsIgnored()
@@ -398,7 +455,7 @@ void ShellCommandDetailsAreCapturedFromFunctionCall()
 
     var task = machine.BuildTask();
     Expect(task.Status, CodexSessionStatus.RunningTool, "shell command call should enter RunningTool");
-    Expect(task.DebugSource?.Contains("Command: dotnet test DynamicIsland.Tests/DynamicIsland.Tests.csproj -c Release", StringComparison.Ordinal) ?? false, true, "debug source should include the parsed shell command");
+    Expect(task.Message.Contains("Command: dotnet test DynamicIsland.Tests/DynamicIsland.Tests.csproj -c Release", StringComparison.Ordinal), true, "tool messages should include the parsed shell command even outside debug mode");
 }
 
 void ExpandedContentShowsChangedFilesOnlyAfterCompletion()
@@ -440,6 +497,31 @@ void ExpandedContentShowsChangedFilesOnlyAfterCompletion()
     Expect(viewModel.ChangedFiles.Count, 2, "completed turns should expose tracked changed files");
 
     viewModel.Dispose();
+}
+
+void BuildTaskOmitsDebugSourceOutsideDebugMode()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f41342");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T06:15:00Z");
+
+    Apply(machine, EventMessage("task_started", startedAt));
+    var task = machine.BuildTask();
+    Expect(string.IsNullOrWhiteSpace(task.DebugSource), true, "non-debug mode should not generate debug source strings");
+}
+
+void BuildSnapshotReturnsCachedInstanceWhenStateIsUnchanged()
+{
+    var machine = new CodexCliSessionStateMachine("019d6ff3-687e-7cd1-a14f-a7fa77f41343");
+    var startedAt = DateTimeOffset.Parse("2026-04-09T06:16:00Z");
+
+    Apply(machine, EventMessage("task_started", startedAt));
+    var first = machine.BuildSnapshot(startedAt.AddSeconds(1));
+    var second = machine.BuildSnapshot(startedAt.AddSeconds(1));
+
+    if (!ReferenceEquals(first, second))
+    {
+        throw new InvalidOperationException("unchanged snapshots should reuse the cached snapshot instance");
+    }
 }
 
 void IdleUsesCodexIcon()

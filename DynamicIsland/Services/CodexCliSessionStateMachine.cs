@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DynamicIsland.Models;
+using DynamicIsland.Utils;
 
 namespace DynamicIsland.Services;
 
@@ -17,12 +18,18 @@ internal enum CodexCliDerivedStatus
     Unknown
 }
 
+internal readonly record struct CodexCliSessionStatusInfo(
+    CodexCliDerivedStatus DerivedStatus,
+    CodexSessionStatus PublicStatus,
+    DateTimeOffset UpdatedAt);
+
 internal sealed record CodexCliSessionSnapshot(CodexTask Task, CodexCliDerivedStatus DerivedStatus);
 
 internal sealed class CodexCliSessionStateMachine
 {
     private static readonly IReadOnlyList<string> EmptyActions = Array.Empty<string>();
     private static readonly IReadOnlyList<string> EmptyFiles = Array.Empty<string>();
+    private static readonly bool IncludeDebugSource = AppRuntimeOptions.ResolveDebugMode();
     private static readonly TimeSpan CompletedDisplayDuration = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan InterruptedDisplayDuration = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ThinkingSuspectedThreshold = TimeSpan.FromSeconds(8);
@@ -40,6 +47,11 @@ internal sealed class CodexCliSessionStateMachine
     private string? _currentOpenTool;
     private DateTimeOffset? _toolStartTime;
     private DateTimeOffset? _evaluationTime;
+    private CodexCliSessionSnapshot? _cachedSnapshot;
+    private IReadOnlyList<string> _cachedChangedFiles = EmptyFiles;
+    private int _changedFilesVersion;
+    private int _cachedChangedFilesVersion = -1;
+    private bool _snapshotDirty = true;
 
     public CodexCliSessionStateMachine(string sessionId)
     {
@@ -55,9 +67,10 @@ internal sealed class CodexCliSessionStateMachine
 
     public void SetThreadName(string? threadName)
     {
-        if (!string.IsNullOrWhiteSpace(threadName))
+        if (!string.IsNullOrWhiteSpace(threadName) && !string.Equals(_threadName, threadName, StringComparison.Ordinal))
         {
             _threadName = threadName;
+            MarkSnapshotDirty();
         }
     }
 
@@ -85,10 +98,16 @@ internal sealed class CodexCliSessionStateMachine
 
     public bool AdvanceClock(DateTimeOffset now)
     {
-        var previous = BuildSnapshot(GetEvaluationTime());
+        var previousDerived = GetDerivedStatus(GetEvaluationTime());
         _evaluationTime = now;
-        var current = BuildSnapshot(now);
-        return !AreEquivalent(previous.Task, current.Task);
+        var currentDerived = GetDerivedStatus(now);
+        if (previousDerived != currentDerived)
+        {
+            MarkSnapshotDirty();
+            return true;
+        }
+
+        return false;
     }
 
     public CodexTask BuildTask()
@@ -96,18 +115,32 @@ internal sealed class CodexCliSessionStateMachine
         return BuildSnapshot(GetEvaluationTime()).Task;
     }
 
+    internal CodexCliSessionStatusInfo GetStatusInfo(DateTimeOffset now)
+    {
+        var derivedStatus = GetDerivedStatus(now);
+        return new CodexCliSessionStatusInfo(derivedStatus, MapPublicStatus(derivedStatus), UpdatedAt);
+    }
+
     internal CodexCliSessionSnapshot BuildSnapshot(DateTimeOffset now)
     {
         var derivedStatus = GetDerivedStatus(now);
+        if (!_snapshotDirty && _cachedSnapshot is not null && _cachedSnapshot.DerivedStatus == derivedStatus)
+        {
+            return _cachedSnapshot;
+        }
+
         var publicStatus = MapPublicStatus(derivedStatus);
         var title = !string.IsNullOrWhiteSpace(_threadName)
             ? _threadName!
             : "Codex";
         var message = BuildMessage(derivedStatus);
-
-        return new CodexCliSessionSnapshot(
+        var snapshot = new CodexCliSessionSnapshot(
             new CodexTask(publicStatus, title, message, EmptyActions, UpdatedAt, SessionId, GetChangedFilesSnapshot(), BuildDebugSource(derivedStatus)),
             derivedStatus);
+
+        _cachedSnapshot = snapshot;
+        _snapshotDirty = false;
+        return snapshot;
     }
 
     private bool TryApplyDocument(JsonElement root)
@@ -131,7 +164,7 @@ internal sealed class CodexCliSessionStateMachine
             switch (outerTypeElement.GetString(), payloadType)
             {
                 case ("event_msg", "task_started"):
-                    _changedFiles.Clear();
+                    ResetChangedFiles();
                     ClearOpenTool();
                     return SetBaseState(SessionBaseState.Processing, "Starting a new Codex CLI turn.", timestamp, SessionEventKind.TaskStarted, toolName: null);
 
@@ -262,6 +295,7 @@ internal sealed class CodexCliSessionStateMachine
         LastEventAt = timestamp;
         UpdatedAt = timestamp;
         AlignEvaluationTime(timestamp);
+        MarkSnapshotDirty();
 
         var current = BuildSnapshot(GetEvaluationTime()).Task;
         return !AreEquivalent(previous, current);
@@ -332,14 +366,29 @@ internal sealed class CodexCliSessionStateMachine
     private string BuildRunningToolLongMessage()
     {
         var toolName = _currentOpenTool ?? _lastToolName;
-        return toolName is not null
+        var message = toolName is not null
             ? $"Running {toolName} for a while."
             : "Running a tool for a while.";
+        return AppendToolDetail(message);
     }
 
     private IReadOnlyList<string> GetChangedFilesSnapshot()
     {
-        return _changedFiles.Count == 0 ? EmptyFiles : _changedFiles.ToArray();
+        if (_changedFiles.Count == 0)
+        {
+            _cachedChangedFiles = EmptyFiles;
+            _cachedChangedFilesVersion = _changedFilesVersion;
+            return _cachedChangedFiles;
+        }
+
+        if (_cachedChangedFilesVersion == _changedFilesVersion)
+        {
+            return _cachedChangedFiles;
+        }
+
+        _cachedChangedFiles = _changedFiles.ToArray();
+        _cachedChangedFilesVersion = _changedFilesVersion;
+        return _cachedChangedFiles;
     }
 
     private void TrackFilesFromToolCall(JsonElement payload)
@@ -396,6 +445,9 @@ internal sealed class CodexCliSessionStateMachine
         {
             _changedFiles.RemoveRange(maxFiles, _changedFiles.Count - maxFiles);
         }
+
+        _changedFilesVersion++;
+        MarkSnapshotDirty();
     }
 
     private void ClearOpenTool()
@@ -625,11 +677,12 @@ internal sealed class CodexCliSessionStateMachine
         return normalized[..(maxLength - 1)] + "…";
     }
 
-    private static string BuildToolRunningMessage(string? toolName)
+    private string BuildToolRunningMessage(string? toolName)
     {
-        return toolName is not null
+        var message = toolName is not null
             ? $"Running {toolName}."
             : "Running a Codex CLI tool.";
+        return AppendToolDetail(message);
     }
 
     private static string BuildPostToolMessage(string? toolName)
@@ -637,6 +690,13 @@ internal sealed class CodexCliSessionStateMachine
         return toolName is not null
             ? $"Finished {toolName}. Continuing the current turn."
             : "Tool output received. Continuing the current turn.";
+    }
+
+    private string AppendToolDetail(string message)
+    {
+        return string.IsNullOrWhiteSpace(_lastToolDetail)
+            ? message
+            : $"{message}{Environment.NewLine}Command: {_lastToolDetail}";
     }
 
     private static CodexSessionStatus MapPublicStatus(CodexCliDerivedStatus derivedStatus)
@@ -755,8 +815,13 @@ internal sealed class CodexCliSessionStateMachine
             : trimmed.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
     }
 
-    private string BuildDebugSource(CodexCliDerivedStatus derivedStatus)
+    private string? BuildDebugSource(CodexCliDerivedStatus derivedStatus)
     {
+        if (!IncludeDebugSource)
+        {
+            return null;
+        }
+
         var lines = new List<string>
         {
             $"Derived: {derivedStatus}",
@@ -781,6 +846,23 @@ internal sealed class CodexCliSessionStateMachine
 
         lines.Add($"Session: {SessionId}");
         return string.Join(Environment.NewLine, lines);
+    }
+
+    private void ResetChangedFiles()
+    {
+        if (_changedFiles.Count == 0)
+        {
+            return;
+        }
+
+        _changedFiles.Clear();
+        _changedFilesVersion++;
+        MarkSnapshotDirty();
+    }
+
+    private void MarkSnapshotDirty()
+    {
+        _snapshotDirty = true;
     }
 
     private static string FormatEventKind(SessionEventKind eventKind)

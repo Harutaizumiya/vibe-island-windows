@@ -69,7 +69,7 @@ internal sealed class AppRuntimeOptions
         }
         catch (Exception ex)
         {
-            DiagnosticsLogger.Write($"Failed to read {ConfigFileName}: {ex.Message}");
+            DiagnosticsLogger.WriteError($"Failed to read {ConfigFileName}: {ex.Message}");
             return new AppRuntimeOptions();
         }
     }

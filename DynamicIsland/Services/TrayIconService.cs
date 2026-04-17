@@ -29,7 +29,7 @@ public sealed class TrayIconService : IDisposable
         };
 
         _notifyIcon.DoubleClick += OnNotifyIconDoubleClick;
-        DiagnosticsLogger.Write("Tray icon initialized.");
+        DiagnosticsLogger.WriteInfo("Tray icon initialized.");
     }
 
     public void Dispose()
@@ -43,7 +43,7 @@ public sealed class TrayIconService : IDisposable
 
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
-        DiagnosticsLogger.Write("Tray icon disposed.");
+        DiagnosticsLogger.WriteInfo("Tray icon disposed.");
     }
 
     private void OnNotifyIconDoubleClick(object? sender, EventArgs e)

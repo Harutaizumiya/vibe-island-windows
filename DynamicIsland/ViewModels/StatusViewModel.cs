@@ -434,7 +434,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
     {
         ClearApprovalFeedback();
         var previousStatus = CurrentStatus;
-        DiagnosticsLogger.Write($"Task update: status={task.Status}, title={task.Title}, actions={task.AvailableActions.Count}");
+        DiagnosticsLogger.WriteVerbose($"Task update: status={task.Status}, title={task.Title}, actions={task.AvailableActions.Count}");
         CurrentStatus = task.Status;
         StatusText = BuildDisplayTitle(task);
         StatusMessage = task.Message;
@@ -823,7 +823,7 @@ public sealed class StatusViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        DiagnosticsLogger.Write($"IsExpanded -> {value}");
+        DiagnosticsLogger.WriteVerbose($"IsExpanded -> {value}");
         OnPropertyChanged(nameof(ExpansionHint));
         return true;
     }
